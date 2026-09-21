@@ -15,10 +15,6 @@ subprojects {
     val newSubprojectBuildDir: Directory = newBuildDir.dir(project.name)
     project.layout.buildDirectory.value(newSubprojectBuildDir)
 }
-subprojects {
-    project.evaluationDependsOn(":app")
-}
-
 // flutter_quick_video_encoder (last published 2024, unmaintained since) hardcodes
 // compileSdk 33 in its own Android module — too low for the androidx.fragment/core/
 // lifecycle versions other, newer plugins now pull in, which require compileSdk 34+
@@ -34,6 +30,14 @@ subprojects {
             }
         }
     }
+}
+
+// Must come *after* the afterEvaluate hook above: this forces `:app` to be
+// evaluated immediately, and Gradle rejects registering an afterEvaluate
+// action on a project that has already been evaluated ("Cannot run
+// Project.afterEvaluate(Action) when the project is already evaluated").
+subprojects {
+    project.evaluationDependsOn(":app")
 }
 
 tasks.register<Delete>("clean") {
