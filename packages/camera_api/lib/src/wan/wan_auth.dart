@@ -32,14 +32,17 @@ class WanAuth {
   WanAuth._();
 
   /// The signed-in session's current Cognito ID token, or `null` if not signed in. Backs
-  /// `KvsPlaybackClient` (still Lambda-relayed — see [kvsPlaybackLambdaUrl]'s doc).
+  /// `KvsMediaViewerCredentialsClient` (still Lambda-relayed — see [kvsPlaybackLambdaUrl]'s doc).
   static String? Function()? idTokenProvider;
 
   /// The deployed `cloud_backend/kvs_playback_lambda` Function URL
   /// (`kb/wiki/aws-iot-kvs-setup.md` Part D). **2026-08-18**: `IotCommandClient` no longer routes
-  /// through this relay (see its own doc) — this URL now backs only `KvsPlaybackClient`'s KVS
-  /// HLS-session lookup, which is a separate, still-unverified Cognito-federation restriction
-  /// (`kb/wiki/kvs-viewer-read-permissions-cognito-role.md`), not touched by that change.
+  /// through this relay (see its own doc). **2026-09-17**: this URL now backs
+  /// `KvsMediaViewerCredentialsClient`'s `mode=media` credential-vending action (replacing the
+  /// old `KvsPlaybackClient`'s HLS-session lookup entirely) — a genuine, confirmed-real Cognito-
+  /// federation restriction on `kinesisvideo:GetDataEndpoint`/`GetMedia`
+  /// (`kb/wiki/kvs-viewer-read-permissions-cognito-role.md`), independently re-verified live
+  /// before this Lambda action was built, not touched by the `IotCommandClient` change above.
   static String? kvsPlaybackLambdaUrl;
 
   /// Real, temporary AWS credentials for the signed-in user's federated Identity Pool role, or

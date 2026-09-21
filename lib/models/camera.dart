@@ -77,9 +77,6 @@ enum CameraAntiFlickerMode { hz50, hz60, auto }
 /// exposure.
 enum CameraAutoManual { auto, manual }
 
-/// Video Encoder screen — output resolution.
-enum CameraResolution { p1080, p720, p480 }
-
 /// Video Encoder screen — codec.
 enum CameraEncoderType { h264, h265 }
 
@@ -135,7 +132,11 @@ class StreamEncoderConfig {
     required this.bitrateKbps,
   });
 
-  final CameraResolution resolution;
+  /// The camera's own reported pixel dimensions (`camera_api`'s `Resolution`
+  /// record — structural equality, so pending-vs-applied comparison works).
+  /// Never a bucketed enum: a real 2560x1440 stream must not be labelled
+  /// "1080p", and two distinct reported sizes must stay distinguishable.
+  final Resolution resolution;
   final CameraEncoderType encoderType;
   final CameraEncoderProfile encoderProfile;
   final double frameRate;
@@ -145,7 +146,7 @@ class StreamEncoderConfig {
   final double bitrateKbps;
 
   static const highResDefaults = StreamEncoderConfig(
-    resolution: CameraResolution.p1080,
+    resolution: (width: 1920, height: 1080),
     encoderType: CameraEncoderType.h265,
     encoderProfile: CameraEncoderProfile.main,
     frameRate: 15,
@@ -156,7 +157,7 @@ class StreamEncoderConfig {
   );
 
   static const mediumDefaults = StreamEncoderConfig(
-    resolution: CameraResolution.p720,
+    resolution: (width: 1280, height: 720),
     encoderType: CameraEncoderType.h264,
     encoderProfile: CameraEncoderProfile.main,
     frameRate: 15,
@@ -167,7 +168,7 @@ class StreamEncoderConfig {
   );
 
   static const lowDefaults = StreamEncoderConfig(
-    resolution: CameraResolution.p480,
+    resolution: (width: 640, height: 480),
     encoderType: CameraEncoderType.h264,
     encoderProfile: CameraEncoderProfile.baseline,
     frameRate: 15,
@@ -188,7 +189,7 @@ class StreamEncoderConfig {
       };
 
   StreamEncoderConfig copyWith({
-    CameraResolution? resolution,
+    Resolution? resolution,
     CameraEncoderType? encoderType,
     CameraEncoderProfile? encoderProfile,
     double? frameRate,
@@ -281,7 +282,7 @@ class Camera {
     this.exposure = CameraAutoManual.auto,
     this.exposureTime = 10000,
     this.exposureGain = 0,
-    this.videoResolution = CameraResolution.p1080,
+    this.videoResolution = const (width: 1920, height: 1080),
     this.encoderType = CameraEncoderType.h264,
     this.encoderProfile = CameraEncoderProfile.main,
     this.frameRate = 15,
@@ -460,7 +461,7 @@ class Camera {
   /// bitrate badges keep reading `bitrateKbps`/etc. directly. The other two
   /// streams live in [mediumStreamEncoder]/[lowStreamEncoder]. Read/write
   /// any stream uniformly via [encoderConfigFor]/[copyWithEncoderConfig].
-  final CameraResolution videoResolution;
+  final Resolution videoResolution;
   final CameraEncoderType encoderType;
   final CameraEncoderProfile encoderProfile;
   final double frameRate;
@@ -795,7 +796,7 @@ class Camera {
     CameraAutoManual? exposure,
     double? exposureTime,
     double? exposureGain,
-    CameraResolution? videoResolution,
+    Resolution? videoResolution,
     CameraEncoderType? encoderType,
     CameraEncoderProfile? encoderProfile,
     double? frameRate,

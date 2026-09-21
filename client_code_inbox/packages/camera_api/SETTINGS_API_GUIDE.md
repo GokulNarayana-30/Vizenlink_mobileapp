@@ -606,7 +606,7 @@ transport and purpose — pick by scenario, not by "which one did I use last tim
 |---|---|---|
 | LAN, user-facing capture or click-to-draw backdrop | `SnapshotClient.getSnapshot()` | `GET /snapshot`; `profile: 'high'` for a real capture, `'medium'` for a lightweight mask/OSD editor backdrop. |
 | WAN, transient settings-screen backdrop | `WanPreviewSnapshotClient.getPreviewSnapshot()` | End-to-end encrypted (AES-256-GCM under a camera-generated shared key); **caller must not persist the returned bytes** — no gallery save, no cache file. Requires the shared key already fetched (open a settings screen on LAN once first — `RestStreamingClient.getPreviewKey()`, redesigned 2026-08-21 from a per-app pushed RSA key so re-adding this camera on a second device doesn't lock the first one out). |
-| WAN, live video | `WanLiveViewClient.resolvePlaybackUri()` | Not a snapshot — resolves a playable KVS HLS URL after `startCloudStreaming()` confirms active. See [Cloud Streaming](#cloud-streaming-wan-live-view) below. |
+| WAN, live video | `WanLiveViewClient.startMediaSession()` | Not a snapshot — starts a live `KvsMediaLiveViewSession` (direct `GetMedia`, local loopback URL) after `startCloudStreaming()` confirms active. See [Cloud Streaming](#cloud-streaming-wan-live-view) below. |
 
 ## Cloud Streaming (WAN live view)
 
@@ -621,12 +621,23 @@ opportunistically once LAN reachability is confirmed, to avoid an unnecessary AW
 trip when stopping.
 
 **WAN:** `WanLiveViewClient`/`AwsWanLiveViewClient` — `startCloudStreaming(quality)`/
-`stopCloudStreaming(token)`/`getCloudStreamingStatus(token)`/`resolvePlaybackUri(quality)`.
+`stopCloudStreaming(token)`/`getCloudStreamingStatus(token)`/`startMediaSession(quality)`
+(**replaces `resolvePlaybackUri`, 2026-09-17** — returns a live `KvsMediaLiveViewSession` the
+caller must `stop()` when done, not a static URL).
 **`FR-CF-154` (2026-09-14): quality-selective and reference-counted** — `quality` is a
 `StreamQuality` (`high`/`medium`/`low`, one per real AWS KVS stream, each independently billed);
 `startCloudStreaming` returns a per-viewer lease token, which `getCloudStreamingStatus` also
 refreshes (the heartbeat — call it at least every 30s or the camera drops the lease). See
 [STREAMING_GUIDE.md](STREAMING_GUIDE.md) §3 for the full sequence.
+
+**Never call `startCloudStreaming`/`startMediaSession` just to check reachability or enable a UI
+element** — direct user hardware report 2026-09-18: each KVS stream is a real, individually-
+billed AWS resource, so calling this from a screen's silent "ping the camera" path (opened, app
+resumed, network reconnected) bills real cloud usage the user never asked for. `mobile_app`'s own
+`LiveViewController` had exactly this bug (fixed via `start({bool allowWan})`, gating every eager
+call site to `allowWan: false` and reserving `allowWan: true` for an explicit user action) — see
+`API_REFERENCE.md`'s `WanLiveViewClient` usage note for the full story. Any new WAN live-view
+caller should follow the same split.
 
 ## WiFi
 
@@ -975,7 +986,7 @@ PrivacyMode, Mask, Osd, VideoEncoder, AudioVolume, SpeakerVolume, DeviceIdentity
 none of them — will get a real response; they'll time out or fail against a camera that never
 subscribes to the command topic in the first place. `wanLiveViewCapable` is a *stricter* subset
 of the same flag, additionally requiring KVS build support — gates only
-`WanLiveViewClient`/`resolvePlaybackUri`/`WanPreviewSnapshotClient`, not the command-relay
+`WanLiveViewClient`/`startMediaSession`/`WanPreviewSnapshotClient`, not the command-relay
 clients above.
 
 Practical effect: don't reach for `isWan`/"is the transport currently WAN" as your only signal

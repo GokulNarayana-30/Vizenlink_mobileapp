@@ -600,37 +600,54 @@ class _RecordingsTabState extends State<_RecordingsTab> {
       _isLoading = true;
       _error = null;
     });
-    final recordings = _recordings;
-    if (recordings == null) {
-      setState(() => _isLoading = false);
-      return;
-    }
     final now = DateTime.now();
-    final start = now.subtract(const Duration(days: 90));
-    final result = await recordings.getRecordings(
-      start: start.millisecondsSinceEpoch ~/ 1000,
-      end: now.millisecondsSinceEpoch ~/ 1000,
-    );
-    if (!mounted) return;
-    switch (result) {
-      case CameraSuccess(:final value):
-        final clips = List.of(value.clips)
-          ..sort((a, b) => b.start.compareTo(a.start));
-        setState(() {
-          _isLoading = false;
-          _clips = clips;
-        });
-      case CameraFailure(:final reason):
-        setState(() {
-          _isLoading = false;
-          _error = reason;
-        });
-      case CameraTimeout():
-        setState(() {
-          _isLoading = false;
-          _error = 'Timed out';
-        });
+    final startEpoch =
+        now.subtract(const Duration(days: 90)).millisecondsSinceEpoch ~/ 1000;
+    final endEpoch = now.millisecondsSinceEpoch ~/ 1000;
+
+    // LAN first, WAN on failure — the same fallback shape this screen's
+    // storage status and enable/disable paths already use. Without it this
+    // tab is simply empty off-network, even though the Playback tab lists
+    // the very same clips over WAN.
+    List<RecordingClip>? clips;
+    String? failure;
+    final recordings = _recordings;
+    if (recordings != null) {
+      switch (await recordings.getRecordings(
+        start: startEpoch,
+        end: endEpoch,
+      )) {
+        case CameraSuccess(:final value):
+          clips = value.clips;
+        case CameraFailure(:final reason):
+          failure = reason;
+        case CameraTimeout():
+          failure = 'Timed out';
+      }
     }
+    final thingName = widget.connection?.thingName;
+    if (clips == null && thingName != null) {
+      switch (await WanRecordingsClient(
+        thingName,
+      ).getRecordings(start: startEpoch, end: endEpoch)) {
+        case CameraSuccess(:final value):
+          clips = value;
+          failure = null;
+        case CameraFailure(:final reason):
+          failure = reason;
+        case CameraTimeout():
+          failure = 'Timed out';
+      }
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _isLoading = false;
+      _error = failure;
+      if (clips != null) {
+        _clips = List.of(clips)..sort((a, b) => b.start.compareTo(a.start));
+      }
+    });
   }
 
   void _toggleSelected(int clipId) {

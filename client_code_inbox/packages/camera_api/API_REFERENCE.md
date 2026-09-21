@@ -32,6 +32,15 @@ lib/
     device_reset_types.dart    — shared FactoryResetMode enum (LAN + WAN pair)
     util/
       onvif_rect_coordinates.dart  — pixel <-> ONVIF-normalized-polygon math (masks/OSD)
+    media/
+      fmp4_muxer.dart              — RtspFmp4Muxer/VideoCodec: NALU + AAC access units -> fMP4
+                                      boxes (init segment + per-sample fragments). Shared by LAN
+                                      (`RtspLiveViewProxy`/`RtspRemuxProxy`, `mobile_app/lib`) and
+                                      WAN (`KvsMediaLiveViewSession`, below) — moved here from the
+                                      app layer 2026-09-18 specifically so the WAN path could reuse
+                                      it instead of a second, independently-written muxer
+                                      (`kvs_fmp4_muxer.dart`, deleted the same day — see
+                                      `KvsMediaLiveViewSession`'s own doc below for why).
     lan/
       wsse_digest.dart              — shared WSSE-style SHA-1 digest auth
       insecure_camera_http_client.dart — HTTP client that trusts the camera's self-signed cert
@@ -77,7 +86,11 @@ lib/
     wan/                           — AWS IoT MQTT command relay + KVS playback
       wan_auth.dart                — app-supplied auth/config hooks (set once at startup)
       iot_command_client.dart      — low-level command-relay transport
-      kvs_playback_client.dart     — KVS HLS playback-URL lookup
+      kvs_media/
+        kvs_media_viewer_credentials_client.dart — vends short-lived stream-scoped AWS creds
+        mkv_demuxer.dart            — streaming EBML/MKV parser (KVS GetMedia wire format)
+        kvs_get_media_client.dart   — signed POST /getMedia, returns the raw MKV byte stream
+        kvs_media_live_view_session.dart — orchestrates the above + a local HTTP loopback server
       wan_live_view_client.dart    — WanLiveViewClient interface
       aws_wan_live_view_client.dart — concrete WanLiveViewClient implementation
       wan_audio_volume_client.dart
@@ -152,7 +165,8 @@ network as the camera.
 - [WAN — AWS IoT / KVS](#wan--aws-iot--kvs)
   - [WanAuth](#wanauth)
   - [IotCommandClient](#iotcommandclient)
-  - [KvsPlaybackClient](#kvsplaybackclient)
+  - [KvsMediaViewerCredentialsClient](#kvsmediaviewercredentialsclient)
+  - [KvsMediaLiveViewSession](#kvsmedialiveviewsession)
   - [WanLiveViewClient / AwsWanLiveViewClient](#wanliveviewclient--awswanliveviewclient)
   - [WanAudioVolumeClient](#wanaudiovolumeclient)
   - [WanBboxOverlayClient](#wanbboxoverlayclient)
@@ -171,6 +185,8 @@ network as the camera.
   - [WanOsdClient](#wanosdclient)
   - [WanLocalStorageClient](#wanlocalstorageclient)
   - [WanHealthClient](#wanhealthclient)
+  - [WanRecordingsClient](#wanrecordingsclient)
+  - [WanClipPlaybackClient](#wanclipplaybackclient)
   - [WanPrivacyModeClient](#wanprivacymodeclient)
   - [WanVideoEncoderClient](#wanvideoencoderclient)
   - [WanPreviewSnapshotClient](#wanpreviewsnapshotclient)
@@ -1015,8 +1031,9 @@ see that folder's own doc comments for the full picture):
   (`flutter_webrtc`) for `.webrtc`, or `rtsp/rtsp_live_view_proxy.dart`'s `RtspLiveViewProxy` for
   `.rtsp` — the latter remuxes the camera's RTSPS stream into fMP4 over a local HTTP loopback
   (adapted from the pre-existing recorded-clip playback machinery,
-  `../recordings/rtsp/rtsp_replay_client.dart`/`fmp4_muxer.dart`/`rtsp_remux_proxy.dart` — same
-  protocol engine, live view instead of clip playback: no seek, no known duration), then reuses
+  `../recordings/rtsp/rtsp_replay_client.dart`/`rtsp_remux_proxy.dart` +
+  `camera_api`'s own `media/fmp4_muxer.dart` — same protocol engine, live view instead of clip
+  playback: no seek, no known duration), then reuses
   the exact same `VideoPlayerController`-based rendering/mute/snapshot-capture code the WAN (KVS
   HLS) path already had — both are, past that point, just "a `video_player` session fed by a
   local/remote URI."
@@ -1117,9 +1134,10 @@ overwhelming majority of home/community LANs, this app's target deployment.
 
 Every client in this section talks to the camera over AWS IoT Core. **Since 2026-08-18**,
 `IotCommandClient` (commands: settings, deterrence, device identity, etc.) connects **directly**
-to AWS IoT Core over MQTT-over-WSS — no Lambda relay involved. `KvsPlaybackClient` (KVS/HLS video
-playback) still goes through the Lambda relay (`cloud_backend/kvs_playback_lambda`) — a separate,
-still-unverified Cognito-federation restriction on the KVS control-plane APIs specifically (see
+to AWS IoT Core over MQTT-over-WSS — no Lambda relay involved. Video playback
+(`KvsMediaViewerCredentialsClient` + `KvsMediaLiveViewSession`) still goes through the Lambda
+relay (`cloud_backend/kvs_playback_lambda`) for its one credential-vending call — a separate,
+**confirmed-real** Cognito-federation restriction on the KVS control-plane APIs specifically (see
 `kb/wiki/kvs-viewer-read-permissions-cognito-role.md`), not the same restriction the command relay
 was removed for. None of these clients import anything app-specific — they source their AWS
 credentials/config through `WanAuth`'s static hooks instead.
@@ -1132,8 +1150,8 @@ in `main.dart`).
 
 | Hook | Type | Purpose |
 |---|---|---|
-| `idTokenProvider` | `String? Function()?` | Returns the signed-in session's current Cognito ID token, or `null` if not signed in. Backs `KvsPlaybackClient`'s Lambda-relayed lookup. |
-| `kvsPlaybackLambdaUrl` | `String?` | The deployed `cloud_backend/kvs_playback_lambda` Function URL. Backs only `KvsPlaybackClient` now — `IotCommandClient` no longer uses it. |
+| `idTokenProvider` | `String? Function()?` | Returns the signed-in session's current Cognito ID token, or `null` if not signed in. Backs `KvsMediaViewerCredentialsClient`'s Lambda-relayed credential vending. |
+| `kvsPlaybackLambdaUrl` | `String?` | The deployed `cloud_backend/kvs_playback_lambda` Function URL. Backs only `KvsMediaViewerCredentialsClient` now — `IotCommandClient` no longer uses it. |
 | `awsCredentialsProvider` | `Future<WanAwsCredentials?> Function()?` | Returns real, temporary AWS credentials for the signed-in user's federated Identity Pool role, or `null` if not signed in. Expected to internally cache/refresh. Backs `IotCommandClient`'s direct MQTT-over-WSS connection. |
 | `awsIotEndpoint` | `String?` | AWS IoT Core data-plane endpoint (no scheme, e.g. `xxxxx-ats.iot.ap-south-1.amazonaws.com`) — fleet-wide, same value the camera firmware connects to. Backs `IotCommandClient`. |
 | `awsRegion` | `String?` | AWS region the Identity Pool / IoT endpoint live in (e.g. `ap-south-1`) — needed for SigV4 signing. Backs `IotCommandClient`. |
@@ -1170,29 +1188,124 @@ to `IotMqttTransport.instance`, the one shared connection.
 |---|---|---|---|
 | `sendStartCloudStreaming` | `String quality` | `Future<Map<String, dynamic>?>` | **`FR-CF-154` (2026-09-14): request/response, not fire-and-forget** — `params.quality` (`"high"`/`"medium"`/`"low"`), replies with `{token, quality}` on success. Goes through `sendCommandWithResponse`, so it throws on a genuine camera-side rejection (e.g. missing/invalid quality) the same way every other request/response command does. |
 | `sendStopCloudStreaming` | `{int? token}` | `Future<void>` | Fire-and-forget `StopCloudStreaming`. `token` (the lease from `sendStartCloudStreaming`) is sent as `params.token` when given; omitting it falls back to the camera's legacy "stop every quality" behavior. |
-| `sendCommandWithResponse` | `int command, {Map<String, dynamic>? params, double? timeoutSeconds}` | `Future<Map<String, dynamic>?>` | Generic request/response path for any command that replies on the camera's response topic (`vizenlink/response/<thingName>`), reassembling a chunked reply (`FR-NE-108`) if one arrives. Returns `null` **only** when no reply arrives within the window at all (default 12s, overridable via `timeoutSeconds`) — a successful reply with no `output` field (every `Set*`/`Delete*` command's normal shape, see `.claude/rules/cloud-components.md` § "Get/Set response asymmetry") returns an empty map, `{}`, never `null` (`BUG-020`, fixed 2026-08-18 — this class of bug was first found and fixed once already for the old Lambda relay, `BUG-006`; removing the relay dropped that same normalization until this fix restored it client-side). Has a one-shot automatic retry when no reply arrives at all (transient session jitter, not a stuck camera). Throws on a genuine camera-side failure (`status != "ok"`). |
+| `sendCommandWithResponse` | `int command, {Map<String, dynamic>? params, double? timeoutSeconds, bool retryOnTimeout}` | `Future<Map<String, dynamic>?>` | Generic request/response path for any command that replies on the camera's response topic (`vizenlink/response/<thingName>`), reassembling a chunked reply (`FR-NE-108`) if one arrives. Returns `null` **only** when no reply arrives within the window at all (default 12s, overridable via `timeoutSeconds`) — a successful reply with no `output` field (every `Set*`/`Delete*` command's normal shape, see `.claude/rules/cloud-components.md` § "Get/Set response asymmetry") returns an empty map, `{}`, never `null` (`BUG-020`, fixed 2026-08-18 — this class of bug was first found and fixed once already for the old Lambda relay, `BUG-006`; removing the relay dropped that same normalization until this fix restored it client-side). Has a one-shot automatic retry when no reply arrives at all (transient session jitter, not a stuck camera) — **added 2026-09-15**: pass `retryOnTimeout: false` to skip it (only from a caller that already polls on its own schedule, e.g. a reachability ping, where the retry just doubles worst-case latency). Throws on a genuine camera-side failure (`status != "ok"`). |
 
 Every WAN setting client below is a thin typed wrapper around `sendCommandWithResponse` with a
 specific integer command constant (defined as `static const` fields on this class, e.g.
 `IotCommandClient.getMirrorFlip`) and a params/response shape. App code does not normally need to
 call `IotCommandClient` directly except through those wrappers.
 
-### KvsPlaybackClient
+### KvsMediaViewerCredentialsClient
 
-`wan/kvs_playback_client.dart` — resolves a playable KVS URL via the Lambda relay.
+`wan/kvs_media/kvs_media_viewer_credentials_client.dart` — vends short-lived (900s),
+stream-scoped AWS credentials for calling `kinesisvideo:GetMedia` directly, via the Lambda relay's
+`mode=media` action. **Replaces `KvsPlaybackClient` entirely, 2026-09-17** — see
+[KvsMediaLiveViewSession](#kvsmedialiveviewsession) below for why (AWS rejects Cognito-federated
+credentials for `GetDataEndpoint`/`GetMedia` regardless of IAM policy, independently re-confirmed
+live before this was built; the Lambda mints these via `sts:AssumeRole` under its own plain
+execution role instead — no media bytes ever flow through the Lambda itself).
 
 ```dart
-KvsPlaybackClient({http.Client? client, String? Function()? idTokenProvider})
+KvsMediaViewerCredentialsClient({http.Client? client, String? Function()? idTokenProvider})
 ```
 
 | Method | Params | Returns | Description |
 |---|---|---|---|
-| `getPlaybackUrl` | `String streamName` | `Future<String>` | Returns the HLS streaming session URL. Throws on failure (401 bad/expired token, 403 stream outside this fleet, 502 KVS lookup failed — e.g. `StartCloudStreaming` was never sent first). **`FR-CF-154` (2026-09-14): `streamName` must now be `<thing_name>-<quality>`** (`high`/`medium`/`low`, all three suffixed — the old unsuffixed-medium backward-compat exception is gone) — callers normally reach this through `WanLiveViewClient.resolvePlaybackUri(quality)` below, which builds that name for you. **Cloud/hardware-verified** — the "not yet deployed" note here was stale by 2026-08-13; see `STREAMING_GUIDE.md` for the full sequence this fits into and `design/FR-mobile-app.md`'s `FR-MOB-031` for the verification history. |
+| `getCredentials` | `String streamName` | `Future<KvsMediaViewerCredentials>` | Returns `{accessKeyId, secretAccessKey, sessionToken, expiration, region, dataEndpoint}` — the Lambda resolves the `GetMedia` data-plane endpoint itself using the minted credentials, so the caller never needs a separate `GetDataEndpoint` round trip. Throws on failure. `streamName` is `<thing_name>-<quality>` (`high`/`medium`/`low`, all three suffixed — same `FR-CF-154` convention as before), normally built for you via `WanLiveViewClient.startMediaSession(quality)`. `KvsMediaViewerCredentials.isExpiringSoon({margin})` tells a caller to refresh before an actual `AccessDenied`. **Cloud/hardware-verified end-to-end** for both H.264 and H.265 (`testing_utilities/kvs_media_viewer_credentials_test.py`, 4/4 PASS each) — see `kb/raw/2026-09-17-code-kvs-media-viewer-credential-vending.md`. |
+
+### KvsMediaLiveViewSession
+
+`wan/kvs_media/kvs_media_live_view_session.dart` — one WAN playback session: fetches
+`KvsMediaViewerCredentials`, opens a direct signed `POST /getMedia` connection to AWS KVS
+(`kvs_get_media_client.dart`), demuxes the raw MKV stream (`mkv_demuxer.dart`'s `MkvDemuxer`),
+remuxes it into fMP4, and serves that over a local HTTP loopback server — the WAN counterpart of
+`mobile_app`'s LAN `RtspRemuxProxy`/`RtspLiveViewProxy`, same overall shape (`video_player`/
+ExoPlayer plays the local loopback URL as an ordinary progressive/live fMP4 source).
+
+**Reuses `media/fmp4_muxer.dart`'s `RtspFmp4Muxer` directly, not a separate muxer** (`kvs_fmp4_muxer.dart`'s
+`KvsFmp4Muxer`, **deleted 2026-09-18**). Direct user hardware report: WAN playback decoded the
+first video frame then permanently froze (audio kept advancing normally) — narrowed down over
+several real-hardware test cycles to something in `KvsFmp4Muxer`'s own box construction, never
+conclusively pinned to one specific field despite independently verifying (direct comparison
+against a live RTSP capture of the same stream, plus manual SPS bit-level decoding) that both the
+SPS bytes and every sample's AVCC framing were byte-correct. Rather than keep guessing at
+individual box fields, `KvsMediaLiveViewSession._onSample` now **splits each (possibly
+multi-NALU) `MkvSample` into its individual NALUs**, filters out parameter-set NALUs (SPS/PPS/
+VPS/AUD/SEI — already baked into the init segment's `avcC`/`hvcC`, never resent as an ongoing
+sample; same filter `RtspLiveViewSession._emitH264AccessUnit`/`_emitOrCaptureH265Nalu` already use
+for the LAN path) and **converts millisecond timestamps to `RtspFmp4Muxer`'s own 90kHz-tick/
+per-track-sample-rate conventions**, then feeds real slice NALUs through `RtspFmp4Muxer.fragment`/
+`.audioFragment` — the exact code path LAN live view and LAN recorded-clip playback both already
+use, hardware-proven. `KvsMediaViewerCredentials`/`GetMedia`/`MkvDemuxer` are completely
+unaffected by this — only the final "already-demuxed samples -> fMP4 boxes" step changed. See
+`media/fmp4_muxer.dart`'s own doc for the box-level details.
+
+Along the way, also fixed: (1) a `video_player`/ExoPlayer live-position quirk (see
+`RtspFmp4Muxer`'s `totalDurationSeconds` doc, `BUG-029`) — confirmed this session that leaving
+duration `0`/unbounded is correct for a genuinely live WAN stream (matches `RtspLiveViewProxy`'s
+own working convention); a large placeholder duration was tried and reverted after real-hardware
+testing showed it made ExoPlayer switch into VOD-style buffering instead (position advanced, but
+at ~1/8th real-time speed — worse, not fixed); (2) a latent audio-timestamp scaling bug —
+`audioFragment`'s tick params must be in the audio track's own sample-rate timescale (RTSP's RTP
+audio clock already ticks natively at the sample rate; KVS's millisecond Cluster timestamps did
+not, and were never being converted before this fix); (3) `mkv_demuxer.dart`'s multi-fragment
+timestamp continuity (`_fragmentTimeOffsetMs`) — defensive only, since this camera's KVS producer
+turned out to already emit real absolute Unix epoch milliseconds as its Cluster timecodes
+(confirmed against real captured bytes), so real fragment boundaries are naturally continuous on
+their own; the correction now only applies if an actual regression is detected, never
+unconditionally (an earlier version applied it on every real fragment boundary too, which — since
+real timestamps didn't need correcting — nudged them by a small, usually-wrong amount each time).
+**Hardware-verified 2026-09-18**: real WAN medium-quality playback confirmed smooth by the user
+after all three fixes, with WAN-vs-LAN latency now ~3s (down from the broken version's much
+larger, drifting gap) — see `kb/raw/` for the full investigation if one exists, or this package's
+git history around 2026-09-18 for the session that found and fixed this.
+
+There is no dedicated unit test for `RtspFmp4Muxer`'s box output itself (verified via real-device
+hardware testing only, both here and for its original LAN use) — `mkv_demuxer_test.dart` covers
+the demuxer side (parsing real captured `GetMedia` fixture bytes, including the multi-fragment
+case) but nothing here exercises `KvsMediaLiveViewSession`'s own NALU-splitting/timestamp-
+conversion logic in isolation. Worth adding if this path regresses again.
+
+**Replaces `GetHLSStreamingSessionURL`-based WAN playback entirely, 2026-09-17** — not just for
+H.265 (which AWS rejects outright: `UnsupportedStreamMediaTypeException`;
+`GetDASHStreamingSessionURL` has the identical restriction despite more permissive-sounding prose,
+both confirmed against the real AWS API) but for H.264 too, so the app has exactly one WAN
+playback code path regardless of codec.
+
+```dart
+class KvsMediaLiveViewSession {
+  KvsMediaLiveViewSession({
+    required String streamName,
+    KvsMediaViewerCredentialsClient? credentialsClient,
+    KvsGetMediaClient? getMediaClient,
+  })
+
+  Uri? url;                    // the local loopback URL, set once start() completes
+  Future<void> start();        // throws if credential vending or the initial GetMedia request fails
+  Future<void> stop();         // tears down GetMedia + the local HTTP server; safe to call more than once
+  bool get isSessionEnded;     // true once the GetMedia stream itself errored or ended
+  void Function(String message)? onLog;
+}
+```
+
+**One session instance per playback attempt — deliberately not reusable across reconnects**, same
+convention as `RtspRemuxProxy`. The local server refuses new HTTP connections once
+`isSessionEnded` is `true` (the underlying `GetMedia` connection died) — on any disconnect/error,
+construct a **fresh** `KvsMediaLiveViewSession`, never retry against the same `url`.
+`LiveViewController.reconnectWan()` is the app-level entry point for this (see
+`live_view_controller.dart`'s doc). Demuxer correctness verified against real captured AWS KVS
+fixture bytes for both codecs (`camera_api/test/mkv_demuxer_test.dart`, including the
+multi-fragment `GetMedia` case) — `CodecPrivate` for a video track is already a byte-for-byte
+valid `avcC`/`hvcC` payload and `SimpleBlock` frame data is already 4-byte-length-prefixed AVCC/
+HVCC NALUs on this wire (the firmware's own KVS producer builds it that way), so
+`KvsMediaLiveViewSession` never reconstructs either from raw SPS/PPS/VPS — it extracts the
+individual parameter-set NALUs back out of the already-built `avcC`/`hvcC` blob instead (see
+`_extractParamSets` in the source), since that's what `RtspFmp4Muxer`'s constructor needs.
 
 ### WanLiveViewClient / AwsWanLiveViewClient
 
 `wan/wan_live_view_client.dart` defines the interface; `wan/aws_wan_live_view_client.dart`
-provides the concrete implementation over `IotCommandClient` + `KvsPlaybackClient`.
+provides the concrete implementation over `IotCommandClient` + `KvsMediaLiveViewSession`.
 
 **`FR-CF-154` (2026-09-14): quality-selective, reference-counted, per-viewer lease tokens.**
 Every KVS stream (`StreamQuality.high`/`.medium`/`.low`, one per LAN RTSPS quality tier) is a
@@ -1207,14 +1320,13 @@ abstract interface class WanLiveViewClient {
   Future<CameraResult<int>> startCloudStreaming(StreamQuality quality);
   Future<CameraResult<void>> stopCloudStreaming(int token);
   Future<CameraResult<StreamStatus>> getCloudStreamingStatus(int token);
-  Future<CameraResult<Uri>> resolvePlaybackUri(StreamQuality quality);
+  Future<CameraResult<KvsMediaLiveViewSession>> startMediaSession(StreamQuality quality);
 }
 
 class AwsWanLiveViewClient implements WanLiveViewClient {
   AwsWanLiveViewClient(
     String thingName, {
     IotCommandClient? iotCommandClient,
-    KvsPlaybackClient? kvsPlaybackClient,
   })
 }
 ```
@@ -1224,13 +1336,36 @@ class AwsWanLiveViewClient implements WanLiveViewClient {
 | `startCloudStreaming(quality)` | Starts (or, if another viewer already has this tier running, just joins) the KVS push for the requested `StreamQuality`. Returns the viewer's lease `int` token on success. |
 | `stopCloudStreaming(token)` | Releases this viewer's lease; the camera tears the stream down once the last viewer's lease is released. |
 | `getCloudStreamingStatus(token)` | Returns `active`/`idle`/`degraded`/`notCompiled` (`StreamStatus` enum) for this viewer's tier. Retries a couple of times on a transient `idle` result right after starting, since the substream can legitimately still be spinning up. **Also refreshes the camera-side lease for `token`** — call at least every 30s or the camera drops it (`bsp_camera_pollKvsViewerLeases()`, firmware-side). |
-| `resolvePlaybackUri(quality)` | Resolves a playable URI for `quality`'s stream once streaming is confirmed active, via `KvsPlaybackClient`. |
+| `startMediaSession(quality)` | Starts and returns a fresh, already-connected `KvsMediaLiveViewSession` for `quality`'s stream once streaming is confirmed active. **Replaces `resolvePlaybackUri` (2026-09-17)** — callers must `stop()` the returned session when WAN playback ends for any reason, not just discard it (a live resource, unlike the old HLS URL). |
+
+**Usage note, direct user hardware report 2026-09-18**: never call `startCloudStreaming`/
+`startMediaSession` from a screen's own "just resolve reachability/enable the settings icon"
+path — each KVS stream is a real, individually-billed AWS resource (see the `FR-CF-154` note
+above), and calling this just from opening a live-view screen (before the user has asked to
+actually watch anything) starts billing immediately, every time. `mobile_app`'s own
+`LiveViewController` had exactly this bug: `start()` was called unconditionally from several
+"just ping the camera" sites (screen `initState`, network reconnect, app resume, returning from
+a settings screen), and its default behavior fell through to `startCloudStreaming` the moment LAN
+was unreachable. Fixed via `LiveViewController.start({bool allowWan = true})` — every eager/
+silent call site now passes `allowWan: false` (still does a cheap LAN-only reachability check,
+but stops short of ever calling into WAN); only an explicit user action (tapping play, or a
+manual retry) uses the default `allowWan: true`. Any future WAN caller should follow the same
+shape: separate "is the camera reachable at all" from "the user wants to watch," and only ever
+call `startCloudStreaming` for the latter.
 
 **Hardware/cloud-verified for the pre-`FR-CF-154` shape** (corrected 2026-08-13 — was stale);
 **the `FR-CF-154` quality/token rework itself is build-verified only, not yet hardware-verified**
-as of 2026-09-14. See [STREAMING_GUIDE.md](STREAMING_GUIDE.md) for the full WAN sequence this
-class implements, and its "Reconnect and failure semantics" section for a known, unresolved gap
-in how the app recovers from a camera-initiated stop mid-session.
+as of 2026-09-14; **the `startMediaSession`/`GetMedia` replacement is cloud/hardware-verified for
+credential vending + raw `GetMedia` fetch (both codecs), and — corrected 2026-09-18, was stale —
+the full `LiveViewController` wiring is now genuinely hardware-verified too**: real WAN medium-
+quality live playback (H.264) confirmed smooth end-to-end on a real device after the
+`KvsMediaLiveViewSession`/`RtspFmp4Muxer` fix above (see that section for the full incident).
+High-quality WAN playback is a **separate, still-open issue** — a persistent KVS `PutMedia`
+`FRAMES_MISSING_FOR_TRACK` (`errorId=4011`) failure loop was found on the camera/KVS-producer
+side specifically for the high-quality stream, unrelated to this fix; not yet root-caused. See
+[STREAMING_GUIDE.md](STREAMING_GUIDE.md) for the full WAN sequence this class implements, and its
+"Reconnect and failure semantics" section for a known, unresolved gap in how the app recovers from
+a camera-initiated stop mid-session.
 
 **Fixed 2026-08-14**: `getCloudStreamingStatus()` was the one method on this class missing the
 `try`/`catch` its three siblings all had — `IotCommandClient.sendCommandWithResponse()` throws
@@ -1292,7 +1427,7 @@ WanDeviceIdentityClient(String thingName, {IotCommandClient? iotCommandClient})
 
 | Method | Params | Returns | Description |
 |---|---|---|---|
-| `getDeviceIdentity` | `{Duration timeout}` | `CameraResult<({String name, String location, String timezone})>` | All three fields in one combined WAN read. |
+| `getDeviceIdentity` | `{Duration timeout, bool retryOnTimeout}` | `CameraResult<({String name, String location, String timezone})>` | All three fields in one combined WAN read. **Fixed 2026-09-15**: `timeout` used to be declared but never forwarded to `sendCommandWithResponse`, silently falling back to its 12s default (plus the one-shot retry, ~24s worst case) regardless of what was asked for — now honored. `retryOnTimeout` (default `true`) passes through to `sendCommandWithResponse`; set `false` for a caller that polls on its own schedule (e.g. a reachability ping), where the retry only doubles worst-case latency for no benefit. |
 | `getDeviceInfo` | `{Duration timeout}` | `CameraResult<DeviceInformation>` | `FR-NE-115`, added 2026-08-21 — WAN mirror of `OnvifDeviceClient.getDeviceInformation()` (manufacturer/model/firmware/serial/hardware ID). Returns the same `DeviceInformation` type as the LAN client, since the field set is identical either way. Distinct from `getDeviceIdentity` above (user-configurable name/location/timezone, not this fixed build/hardware identity). |
 | `setDeviceName` | `String name, {Duration timeout}` | `CameraResult<void>` | Sets display name. |
 | `setDeviceLocation` | `String location, {Duration timeout}` | `CameraResult<void>` | Sets location. |
@@ -1510,6 +1645,36 @@ WanLocalStorageClient(String thingName, {IotCommandClient? iotCommandClient})
 |---|---|---|---|
 | `getStatus` | `{Duration timeout}` | `CameraResult<LocalStorageStatus>` | Live status. |
 | `setEnabled` | `bool enabled, {Duration timeout}` | `CameraResult<void>` | Same card-present rejection behavior as the LAN client. |
+
+### WanRecordingsClient
+
+WAN counterpart of `RecordingsClient` (`FR-CF-152`, commands 80/81) — what the recording
+timeline needs to list clips before WAN playback can start one.
+
+```dart
+WanRecordingsClient(String thingName, {IotCommandClient? iotCommandClient})
+```
+
+| Method | Returns | Notes |
+|---|---|---|
+| `getRecordingDates({start, end, tzOffsetMinutes})` | `CameraResult<List<DateTime>>` | Local-midnight dates with ≥1 clip (newest ≤50 kept by the camera). |
+| `getRecordings({start, end})` | `CameraResult<List<RecordingClip>>` | Follows the camera's 20-clip pages internally. `sizeBytes`/`active` are not sent over WAN (0/false). |
+
+### WanClipPlaybackClient
+
+WAN recorded-clip playback control (`FR-CF-152`, commands 75–79). The camera streams the clip into
+the KVS stream `wanClipPlaybackStreamName(thingName)` (`<thing>-playback`); play it with
+`KvsMediaLiveViewSession(streamName: client.streamName)`. One playback session camera-wide.
+
+```dart
+WanClipPlaybackClient(String thingName, {IotCommandClient? iotCommandClient})
+```
+
+| Method | Notes |
+|---|---|
+| `startClip(clipId, {startMs})` | `clipId` is `RecordingClip.id`. 30 s timeout, never auto-retried. |
+| `seekClip(clipId, startMs)` / `pause()` / `resume({startMs})` | The recording timeline screen only uses start+stop (teardown/restart) for seek and pause. |
+| `stop()` | Safe when idle; releases the camera's playback slot. |
 
 ### WanHealthClient
 

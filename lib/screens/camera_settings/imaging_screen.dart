@@ -42,6 +42,14 @@ const _fallbackExposureTimeMax = 100000.0;
 const _fallbackExposureGainMin = 0.0;
 const _fallbackExposureGainMax = 48.0;
 
+/// Same fallback convention for the four ISP sliders and WDR level — used
+/// only until `getImagingOptions()` reports this sensor's real ranges, which
+/// are not guaranteed to be 0-100 on every firmware build.
+const _fallbackIspMin = 0.0;
+const _fallbackIspMax = 100.0;
+const _fallbackWdrLevelMin = 1.0;
+const _fallbackWdrLevelMax = 100.0;
+
 /// `CameraMirrorFlip` <-> `MirrorFlipMode` — same 4 values, different enum
 /// types (one app-side, one camera_api-side).
 MirrorFlipMode _toWireMirrorFlip(CameraMirrorFlip mode) => switch (mode) {
@@ -831,6 +839,10 @@ class _ImagingScreenState extends State<ImagingScreen> {
                         settingsKey: const Key('IMG-005'),
                         label: 'Brightness',
                         value: _brightness,
+                        min:
+                            _imagingOptions?.brightness?.min ?? _fallbackIspMin,
+                        max:
+                            _imagingOptions?.brightness?.max ?? _fallbackIspMax,
                         onChanged: (value) =>
                             _markDirty(() => _brightness = value),
                       ),
@@ -838,6 +850,8 @@ class _ImagingScreenState extends State<ImagingScreen> {
                         settingsKey: const Key('IMG-006'),
                         label: 'Contrast',
                         value: _contrast,
+                        min: _imagingOptions?.contrast?.min ?? _fallbackIspMin,
+                        max: _imagingOptions?.contrast?.max ?? _fallbackIspMax,
                         onChanged: (value) =>
                             _markDirty(() => _contrast = value),
                       ),
@@ -845,6 +859,12 @@ class _ImagingScreenState extends State<ImagingScreen> {
                         settingsKey: const Key('IMG-007'),
                         label: 'Saturation',
                         value: _saturation,
+                        min:
+                            _imagingOptions?.colorSaturation?.min ??
+                            _fallbackIspMin,
+                        max:
+                            _imagingOptions?.colorSaturation?.max ??
+                            _fallbackIspMax,
                         onChanged: (value) =>
                             _markDirty(() => _saturation = value),
                       ),
@@ -852,6 +872,8 @@ class _ImagingScreenState extends State<ImagingScreen> {
                         settingsKey: const Key('IMG-008'),
                         label: 'Sharpness',
                         value: _sharpness,
+                        min: _imagingOptions?.sharpness?.min ?? _fallbackIspMin,
+                        max: _imagingOptions?.sharpness?.max ?? _fallbackIspMax,
                         onChanged: (value) =>
                             _markDirty(() => _sharpness = value),
                       ),
@@ -884,7 +906,12 @@ class _ImagingScreenState extends State<ImagingScreen> {
                             settingsKey: const Key('IMG-013'),
                             label: 'WDR level',
                             value: _wdrLevel,
-                            min: 1,
+                            min:
+                                _imagingOptions?.wdrLevel?.min ??
+                                _fallbackWdrLevelMin,
+                            max:
+                                _imagingOptions?.wdrLevel?.max ??
+                                _fallbackWdrLevelMax,
                             onChanged: (value) =>
                                 _markDirty(() => _wdrLevel = value),
                           ),

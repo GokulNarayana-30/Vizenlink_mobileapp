@@ -26,7 +26,7 @@ The screen mapping below predates most of the integration work above and elsewhe
 | Client class(es) | LAN / WAN pair | Likely screen |
 |---|---|---|
 | `OnvifDeviceClient` | LAN only | `camera_info_screen` (device identity/info) |
-| `WanDeviceIdentityClient` | WAN | `camera_info_screen` / `account/active_sessions_screen` ("Authentication" card per its doc comment) |
+| `WanDeviceIdentityClient` | WAN | `camera_info_screen` only. **Corrected 2026-09-21** — this was previously also mapped to `account/active_sessions_screen`, which is wrong: it covers a *camera's* name/location/timezone/password/reboot, nothing about listing a *phone account's* sessions. No client covers that yet. |
 | `OnvifImagingClient`, `WanImagingClient`, `WanImageQualityClient` | LAN + WAN | `imaging_screen` (day/night, WDR, brightness/contrast/etc.) |
 | `NightVisionClient` (nuraeye), `WanNightVisionClient` | LAN + WAN | `night_mode_screen` |
 | `OnvifVideoEncoderClient`, `WanVideoEncoderClient` | LAN + WAN | `video_encoder_screen` |
@@ -38,7 +38,7 @@ The screen mapping below predates most of the integration work above and elsewhe
 | `NetworkInfoClient` ✅, `rest_network_connectivity_client` | LAN | `wifi_config_screen` |
 | `SnapshotClient`, `WanPreviewSnapshotClient` | LAN + WAN | `camera_live_screen`, `camera_preview_thumbnail.dart` widget |
 | `WebRtcUriClient`, `CloudStreamingClient` (nuraeye) | LAN | `camera_live_screen` (live stream URI) |
-| `WanLiveViewClient` / `AwsWanLiveViewClient`, `KvsPlaybackClient` | WAN | `camera_live_screen` (WAN playback path) |
+| `WanLiveViewClient` / `AwsWanLiveViewClient`, `KvsMediaLiveViewSession` | WAN | `camera_live_screen` (WAN live path) — `KvsPlaybackClient` (HLS) was **removed** 2026-09-17, see the 2026-09-21 section below |
 | `IotCommandClient`, `WanAuth` | WAN | Core plumbing — command relay + app-supplied auth config, not screen-specific |
 | `rest_alerts_client`, `rest_deterrence_alarms_client` | LAN | `alerts_screen`, `intrusion_detection_screen` / `line_crossing_screen` (deterrence) |
 | `CapabilitiesClient` (nuraeye), `rest_capabilities_client`, `Media2CapabilitiesClient` (onvif) | LAN | Hardware-gating input for `camera_settings_screen` and its sub-screens (which controls to show/hide) |
@@ -65,8 +65,8 @@ into a single copyable file."
 |---|---|---|---|
 | `RecordingsClient` (`lib/src/lan/nuraeye/recordings_client.dart`) | LAN only, no WAN counterpart yet | `GetRecordings` + a `Range`-capable clip playback/download URI, plain REST (`FR-NE-117`/`FR-NE-118`) — a real recordings list, replacing job-polling ONVIF Search after the sibling app found that a poor fit for a phone client | `camera_live_screen.dart`'s Playback tab — currently plays a single bundled ~1-minute dummy clip on a mocked day-timeline (`_mockRecordedRanges`); this is the real data source that timeline is standing in for |
 | `HealthClient` / `WanHealthClient` | LAN + WAN, same `HealthStatus` wire vocabulary | Read-only camera health/vitals (`FR-HLT-009`) — no matching Set | `camera_info_screen.dart`'s Health section (CAMINFO-031) — currently reads `Camera.healthConditionMessages`, mock data with no real API call behind it yet (per [camera_info_screen.md](../screens/camera_settings/camera_info_screen.md)) |
-| `LoiteringDurationClient` / `WanLoiteringDurationClient` | LAN + WAN | Dwell-time threshold (seconds) before a `Loitering` event fires, independent of `PersonDetected`'s own enable toggle (`FR-CF-150`/`FR-NE-121`); bounds come from `CapabilitiesClient` (`loiteringDurationMinSeconds`/`MaxSeconds`), not a separate Options command | No matching UI in this app yet — `person_detection_screen.dart` is the natural home (mirrors the sibling's `EventSettingsScreen` "Loitering" card), but that screen doesn't currently expose a duration control; flag as a gap for `scenario-gap-audit`/`ui-api-gap-audit` |
-| `BboxOverlayClient` / `WanBboxOverlayClient` | LAN + WAN | Whether the camera burns the AI detection bounding box into the video OSD (`FR-CF-151`/`FR-NE-123`) — purely a display toggle, independent of whether detection/alerts still fire (`bbox` keeps arriving in event payloads regardless); gated on `CameraCapabilities.bboxOverlayCapable` | Same gap as above — `person_detection_screen.dart`, no existing switch for this |
+| `LoiteringDurationClient` / `WanLoiteringDurationClient` | LAN + WAN | Dwell-time threshold (seconds) before a `Loitering` event fires, independent of `PersonDetected`'s own enable toggle (`FR-CF-150`/`FR-NE-121`); bounds come from `CapabilitiesClient` (`loiteringDurationMinSeconds`/`MaxSeconds`), not a separate Options command | ✅ **Integrated** — `person_detection_screen.dart` exposes the duration control (this row previously said no UI existed; the code has since caught up) |
+| `BboxOverlayClient` / `WanBboxOverlayClient` | LAN + WAN | Whether the camera burns the AI detection bounding box into the video OSD (`FR-CF-151`/`FR-NE-123`) — purely a display toggle, independent of whether detection/alerts still fire (`bbox` keeps arriving in event payloads regardless); gated on `CameraCapabilities.bboxOverlayCapable` | ✅ **Integrated** — `person_detection_screen.dart` has the overlay switch |
 | `onvif_recording_client.dart`, `onvif_replaycontrol_client.dart`, `onvif_search_client.dart` | LAN, ONVIF Recording/ReplayControl/Search services | **Superseded, not for integration** — the drop's own `recordings_client.dart` doc comment says the team moved *away* from this ONVIF Recording/Search-based design to the plain-REST `RecordingsClient` above, after finding ONVIF Search's async job-polling browse model a poor fit for a phone client. Kept here for reference/completeness of the drop, not because they're the intended integration path |
 
 **Other files in this drop with in-place edits** (not new classes — same class, updated
@@ -81,3 +81,33 @@ diff shows `getImagingOptions()`/`getMaskOptions()` moving from client-internal 
 required app-layer caching — see `.claude/rules/mobile-app-screen-conventions.md`'s caching
 convention, which this app's `MaskClient` usage already follows per that file's own doc, so this
 may just be the drop catching up to a convention this app already implemented independently).
+
+
+## New in the 2026-09-21 drop — integrated
+
+Two swaps landed on 2026-09-21 (the second after review feedback). Method-level detail lives in
+the package's own `API_REFERENCE.md` §`WanRecordingsClient`/`WanClipPlaybackClient` and
+`STREAMING_GUIDE.md` §3 — not duplicated here, per this doc's header note.
+
+**WAN live view rebuilt.** `KvsPlaybackClient` and its HLS URL lookup are gone entirely;
+`WanLiveViewClient.resolvePlaybackUri(quality)` is replaced by
+`startMediaSession(quality) -> KvsMediaLiveViewSession`. The returned session is a **live
+resource** (background `GetMedia` connection + local loopback HTTP server), not a static URL —
+callers must `stop()` it on dispose, transport switch and every re-resolve. Driven by AWS
+rejecting H.265 at `GetHLSStreamingSessionURL`; both codecs now share one WAN path. The session
+refreshes its own vended credentials and transparently re-establishes `GetMedia` (bounded
+retries + backoff), and caps per-client queued bytes, dropping non-keyframe fragments for a slow
+reader. Integrated in `lib/app_state/live_view_controller.dart` (`_wanMediaSession`,
+`_openWanMediaSession`, `_stopWanMediaSession`).
+
+| Client class(es) | LAN / WAN pair | What it does | Integrated into |
+|---|---|---|---|
+| `WanRecordingsClient` | WAN counterpart of `RecordingsClient` (`FR-CF-152`, cmds 80/81) | `getRecordingDates` / `getRecordings` (follows the camera's 20-clip pages internally). `sizeBytes`/`active` are not sent over WAN (0/false). | `camera_live_screen.dart`'s Playback tab (`_getRecordings`, transport-selected) and `storage_screen.dart`'s Recordings tab (LAN first, WAN on failure) |
+| `WanClipPlaybackClient` | WAN, no LAN counterpart (LAN uses `OnvifReplayControlClient` + `RtspRemuxProxy`) | `startClip`/`seekClip`/`pause`/`resume`/`stop` (`FR-CF-152`, cmds 75–79). Camera pushes the clip into KVS stream `<thing>-playback`; play it with `KvsMediaLiveViewSession(streamName: client.streamName)`. **One playback session camera-wide.** | `camera_live_screen.dart`'s `_WanClipSession` (behind the `_ClipSession` transport abstraction, so `_openClip`'s race-handling stays single-sourced) |
+| `KvsGetMediaClient`, `KvsMediaViewerCredentialsClient`, `MkvDemuxer`, `RtspFmp4Muxer` (moved to `src/media/`) | WAN | Credential vending -> `GetMedia` -> MKV demux -> fMP4 remux -> loopback server. `RtspFmp4Muxer` moved *into* the package and gained H.265 (`VideoCodec`/`hvcC`); the app deleted its own `lib/rtsp/fmp4_muxer.dart` copy and both RTSP proxies now import the package one. | `lib/rtsp/rtsp_remux_proxy.dart`, `lib/rtsp/rtsp_live_view_proxy.dart`, `live_view_controller.dart` |
+
+**Known gap, needs the senior:** `OsdOptions` reports `fontSizeMin`/`fontSizeMax`, but no OSD
+setter (`createTimestampOsd`/`updateTimestampOsd`/`WanOsdClient.setOsd`) accepts a font size, so
+the bounds cannot be acted on. A font-size control was scoped for
+`on_screen_display_screen.dart` and **not built** for this reason — it needs a `font_size`
+parameter on SetOSD first.

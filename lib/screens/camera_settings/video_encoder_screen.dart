@@ -1,3 +1,4 @@
+import 'package:camera_api/camera_api.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
@@ -7,11 +8,8 @@ import '../../widgets/glass_card.dart';
 import '../../widgets/gradient_background.dart';
 import 'video_stream_encoder_screen.dart';
 
-String _resolutionLabel(CameraResolution resolution) => switch (resolution) {
-  CameraResolution.p1080 => '1080p',
-  CameraResolution.p720 => '720p',
-  CameraResolution.p480 => '480p',
-};
+String _resolutionLabel(Resolution resolution) =>
+    '${resolution.width}×${resolution.height}';
 
 /// One-line summary of a stream's current settings, for a landing row's
 /// subtitle — e.g. "1080p · H.265 · 4.0 Mbps · 15 fps".
@@ -25,14 +23,36 @@ String _streamSummary(StreamEncoderConfig c) {
       '${c.frameRate.round()} fps';
 }
 
-/// Video Encoder landing list — one row per encoder stream (High-res /
-/// Medium / Low). Tapping a row opens [VideoStreamEncoderScreen] scoped to
-/// that stream. **All three streams are real** (2026-09-11) —
-/// `OnvifVideoEncoderClient`/`WanVideoEncoderClient` were generalized to
-/// address any video encoder config by token (`VideoEncoderCfg_1`/`_2`/`_3`),
-/// not just the high-res one — see
+/// The encoder-config token backing each stream — the same mapping
+/// `video_stream_encoder_screen.dart` uses to address a config, here used in
+/// reverse to decide which streams the camera actually has.
+const _tokenForStream = {
+  VideoStream.highRes: kHighResVideoEncoderToken,
+  VideoStream.medium: kMediumResVideoEncoderToken,
+  VideoStream.low: kLowResVideoEncoderToken,
+};
+
+const _titleForStream = {
+  VideoStream.highRes: 'High-res stream',
+  VideoStream.medium: 'Medium stream',
+  VideoStream.low: 'Low stream',
+};
+
+const _keyForStream = {
+  VideoStream.highRes: Key('ENC-019'),
+  VideoStream.medium: Key('ENC-020'),
+  VideoStream.low: Key('ENC-021'),
+};
+
+/// Video Encoder landing list — one row per encoder stream the camera
+/// actually reports, discovered via `OnvifVideoEncoderClient.getProfiles()`
+/// rather than assumed to be exactly three (`SETTINGS_API_GUIDE.md`: never
+/// hardcode a count or a `VideoEncoderCfg_N` list). Until that call resolves,
+/// and on any camera with no saved connection or a failed lookup, all three
+/// known streams are listed — the previous unconditional behavior. Tapping a
+/// row opens [VideoStreamEncoderScreen] scoped to that stream. See
 /// `docs/screens/camera_settings/video_display/video_encoder_screen.md`.
-class VideoEncoderScreen extends StatelessWidget {
+class VideoEncoderScreen extends StatefulWidget {
   const VideoEncoderScreen({
     super.key,
     required this.camera,
@@ -44,13 +64,47 @@ class VideoEncoderScreen extends StatelessWidget {
   final Camera camera;
   final HomesController homesController;
 
+  @override
+  State<VideoEncoderScreen> createState() => _VideoEncoderScreenState();
+}
+
+class _VideoEncoderScreenState extends State<VideoEncoderScreen> {
+  /// Streams the camera confirmed it has. Null means "not known" — still
+  /// loading, no saved connection, or the lookup failed — in which case all
+  /// three are shown rather than hiding real streams on a bad round trip.
+  List<VideoStream>? _availableStreams;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadProfiles();
+  }
+
+  Future<void> _loadProfiles() async {
+    final connection = widget.camera.connection;
+    if (connection == null) return;
+    final client = OnvifVideoEncoderClient(connection);
+    final result = await client.getProfiles();
+    client.close();
+    if (!mounted || result is! CameraSuccess<List<MediaProfile>>) return;
+    final reported = {for (final p in result.value) p.videoEncoderConfigToken};
+    final streams = [
+      for (final stream in VideoStream.values)
+        if (reported.contains(_tokenForStream[stream])) stream,
+    ];
+    // An empty result would blank the screen — treat it as "unknown" and keep
+    // showing all three rather than claiming this camera has no streams.
+    if (streams.isEmpty) return;
+    setState(() => _availableStreams = streams);
+  }
+
   Camera get _camera {
-    for (final home in homesController.value.homes) {
+    for (final home in widget.homesController.value.homes) {
       for (final c in home.cameras) {
-        if (c.id == camera.id) return c;
+        if (c.id == widget.camera.id) return c;
       }
     }
-    return camera;
+    return widget.camera;
   }
 
   void _openStream(BuildContext context, VideoStream stream) {
@@ -63,6 +117,7 @@ class VideoEncoderScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final streams = _availableStreams ?? VideoStream.values;
     return GradientBackground(
       child: Scaffold(
         backgroundColor: Colors.transparent,
@@ -71,38 +126,21 @@ class VideoEncoderScreen extends StatelessWidget {
           title: const Text('Video Encoder'),
         ),
         body: AnimatedBuilder(
-          animation: homesController,
+          animation: widget.homesController,
           builder: (context, _) {
             final cam = _camera;
             return ListView(
               padding: const EdgeInsets.all(16),
               children: [
-                _StreamRow(
-                  settingsKey: const Key('ENC-019'),
-                  title: 'High-res stream',
-                  summary: _streamSummary(
-                    cam.encoderConfigFor(VideoStream.highRes),
+                for (final stream in streams) ...[
+                  if (stream != streams.first) const SizedBox(height: 12),
+                  _StreamRow(
+                    settingsKey: _keyForStream[stream]!,
+                    title: _titleForStream[stream]!,
+                    summary: _streamSummary(cam.encoderConfigFor(stream)),
+                    onTap: () => _openStream(context, stream),
                   ),
-                  onTap: () => _openStream(context, VideoStream.highRes),
-                ),
-                const SizedBox(height: 12),
-                _StreamRow(
-                  settingsKey: const Key('ENC-020'),
-                  title: 'Medium stream',
-                  summary: _streamSummary(
-                    cam.encoderConfigFor(VideoStream.medium),
-                  ),
-                  onTap: () => _openStream(context, VideoStream.medium),
-                ),
-                const SizedBox(height: 12),
-                _StreamRow(
-                  settingsKey: const Key('ENC-021'),
-                  title: 'Low stream',
-                  summary: _streamSummary(
-                    cam.encoderConfigFor(VideoStream.low),
-                  ),
-                  onTap: () => _openStream(context, VideoStream.low),
-                ),
+                ],
               ],
             );
           },

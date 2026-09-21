@@ -1,223 +1,267 @@
 # UI ↔ API Coverage Gap Report
 
-_Generated 2026-09-11, refreshed 2026-09-15 after `packages/camera_api` was entirely replaced
-again from the `nuraeye-rt` reference app (new `TalkUriClient`, `rest_health_client.dart`/
-`bbox_overlay_client.dart`/`loitering_duration_client.dart` and their WAN mirrors). This pass
-re-verifies every Part B claim by reading actual current call sites in `lib/screens/**` and
-`lib/app_state/**` rather than trusting the prior report, and found one significant miss in the
-prior pass (`OnvifReplayControlClient` is now genuinely wired) plus two items that can now be
-resolved definitively instead of flagged "unconfirmed." Part A / Quick Wins / Blocked are
-unchanged from the 2026-09-11 pass — this refresh focused on Part B._
+**Date:** 2026-09-21
 
-## Summary
+> ## ⚠️ Status update — later on 2026-09-21, after two `camera_api` swaps
+>
+> Parts of this report below are now **out of date**. What changed since it was written:
+>
+> - **The pending `client_code_inbox` drop was integrated** (twice — a second drop landed after
+>   review feedback). The callout below saying it is un-integrated, and the "provisional" caveat
+>   on the WAN/streaming ✅ rows, no longer apply. `KvsPlaybackClient`/HLS is gone; WAN live view
+>   now runs on `startMediaSession` → `KvsMediaLiveViewSession` with credential refresh,
+>   transparent `GetMedia` reconnect and per-client backpressure.
+> - **WAN recordings and WAN clip playback now exist** (`WanRecordingsClient`,
+>   `WanClipPlaybackClient`) and are integrated into `camera_live_screen.dart`'s Playback tab and
+>   `storage_screen.dart`'s Recordings tab. The Playback tab was LAN-only before.
+> - **Resolutions are no longer bucketed** — the `CameraResolution` enum is gone; encoder
+>   screens use the camera's own `width×height`.
+> - **The video-encoder stream list is discovered** via `getProfiles()` instead of three
+>   hardcoded rows.
+> - **Imaging sliders use camera-reported ranges** — `getImagingOptions()`'s four ISP ranges and
+>   `wdrLevel` were already fetched and cached but never reached the sliders.
+> - **New blocked item:** `OsdOptions` exposes `fontSizeMin`/`fontSizeMax` but **no OSD setter
+>   accepts a font size**, so the planned font-size control on `on_screen_display_screen.dart`
+>   was not built. Needs a `font_size` parameter on SetOSD from the senior engineer.
+> - **Still open from this report's Quick Wins:** the events flow is unchanged —
+>   `events_controller.dart`'s `_seedEvents()` is still hardcoded, and `events_screen.dart` still
+>   uses `_mockRecordedRanges`. These are now *easier*, since recordings work on both transports.
+> - **Still open:** the stale `docs/client_code/camera_api.md` rows this report flagged have been
+>   corrected; the `WanDeviceIdentityClient` → `active_sessions_screen` mapping was wrong and is
+>   now fixed there.
+>
+> **None of the above has been verified on real hardware yet.**
 
-**Part A — UI → API** (screens in `lib/screens/**/*.dart` cross-referenced against
-`docs/client_code/*.md` + `docs/screens/**/*.md`):
+**Scope:** Cross-references built screens in `lib/screens/**/*.dart` against documented client/API
+code (`docs/client_code/*.md`, plus `packages/camera_api/API_REFERENCE.md` and
+`SETTINGS_API_GUIDE.md` for capability-level detail). Complements `scenario-gap-audit` (spec vs.
+UI); this report is UI vs. API-wiring only. Read-only analysis — no screen code, docs, or client
+files were modified.
 
-| Status | Count (screens, element-groups) |
-|---|---|
-| ✅ Wired | 34 screens fully or near-fully wired |
-| ⚠️ Client code exists, not wired | 6 screens / element-groups |
-| ❌ No client code available | 8 screens / element-groups |
+## Summary counts
 
-**Part B — API → UI** (capabilities from `docs/client_code/*.md` +
-`packages/camera_api/API_REFERENCE.md` + `SETTINGS_API_GUIDE.md`, ~40 non-plumbing capabilities
-checked):
+**Part A — 54 screen files in `lib/screens/`** checked against `docs/client_code/*.md`
+(`camera_api.md`, `auth_api.md`, `alerts_api_config.md`, `camera_alerts_hub.md`):
 
-| Status | Count |
-|---|---|
-| ✅ Has UI | 34 |
-| 🆕 API available, no UI yet | 6 |
+| Status | Count | Meaning |
+|---|---|---|
+| ✅ Wired | 33 | Screen (directly or via an `app_state` controller it's constructed with) calls a documented, imported client-code method |
+| ⚠️ Client code exists, not wired | 3 | Documented client code covers the need; screen still uses hardcoded/seed data |
+| ❌ No client code available | 9 | Nothing in `docs/client_code/` (or `packages/camera_api`) covers this screen's need |
+| N/A | 9 | Pure navigation menus or static content with no data-backed element to wire (not counted as a gap) |
 
-**Key correction vs. the previous report / stale doc notes:** `docs/client_code/camera_api.md`'s
-"New in the 2026-09-07 drop" table claims `LoiteringDurationClient`/`BboxOverlayClient` and
-`HealthClient`/`WanHealthClient` have "no matching UI yet." That is now false — both are wired
-into `person_detection_screen.dart` and `camera_info_screen.dart`/`camera_sync.dart`
-respectively (verified by reading the call sites, not just doc comments). `TalkUriClient` is
-confirmed still unwired — but two-way talk itself **is** fully working in `camera_live_screen.dart`
-via a different, older mechanism (WebRTC renegotiation on the live-view peer connection, see
-`TWO_WAY_TALK_GUIDE.md`), so this is a duplicate/unadopted transport, not a missing feature.
+**Part B — ~55 documented client classes** (`camera_api.md`'s screen mapping +
+`API_REFERENCE.md`'s `###`/`####` entries, summarized by class per the audit's own allowance) +
+`auth_api`'s 10 `AuthController` methods + `alerts_api`'s `CameraAlertsHub`/`AlertsAuth` surface,
+grepped against `lib/` for actual reference:
 
-**New corrections from this 2026-09-15 refresh:**
-- **`OnvifReplayControlClient` was wrongly listed as unwired.** It is genuinely called —
-  `_PlaybackTabState.initState()`/`_openClip` in `lib/screens/camera_live/camera_live_screen.dart`
-  (search `_replayControl.getReplayUri(clip.id.toString())`, ~line 3357) resolves each clip's
-  RTSPS playback URI and streams it live through `RtspRemuxProxy`, replacing
-  `RecordingsClient.downloadClip()`-then-play-a-temp-file as the real playback path.
-  `RecordingsClient` is still used here too, but now only for `getRecordings()` (clip listing) and
-  `downloadClip()` (the one remaining real use: saving a clip to the gallery). Moved out of the
-  🆕 table's "superseded, do not wire" bullet — `OnvifRecordingClient`/`OnvifSearchClient` are
-  still correctly unwired and still correctly flagged "do not wire," this correction is
-  `OnvifReplayControlClient` only.
-- **`RestHealthClient` resolved, not just flagged uncertain.** Read `rest_health_client.dart`
-  directly: it's a generated client hitting the identical `GET /nuraeye/health` endpoint
-  `HealthClient` (hand-written) already covers, same data, different response type
-  (`GetDeviceHealthResponse` vs. `HealthStatus`) — the exact "hand-written vs. generated REST
-  client" duplicate-surface pattern `SETTINGS_API_GUIDE.md` already documents for
-  `RestPrivacyClient`/`RestVideoImageClient`/etc. ("always use the hand-written client... the
-  generated clients are current unused reserve API surface"). Not a capability gap — removed from
-  the 🆕 table.
-- **Device-identity Location/Password setters resolved, not just flagged uncertain.**
-  `camera_info_screen.dart` confirmed calling `OnvifDeviceClient.setUserPassword`/
-  `WanDeviceIdentityClient.setUserPassword` (with WAN fallback) — the password setter **is**
-  wired. `setDeviceLocation` (LAN or WAN) is genuinely never called anywhere; the screen's own
-  "Location" section (`CAMINFO-004` `Home` dropdown) is an unrelated local Home/Room-assignment
-  feature backed by `HomesController`, not the camera's ONVIF location-scope field. Narrowed the
-  🆕 entry to `setDeviceLocation` only.
-- **Re-verified the "why this needs a fresh pass" items and confirmed the framing still holds:**
-  `OnvifVideoEncoderClient.getProfiles()` is real in `live_view_controller.dart`'s
-  `loadLanProfiles()` (feeds `camera_live_screen.dart`'s Stream Quality picker) and
-  `video_stream_encoder_screen.dart` correctly targets `kMediumResVideoEncoderToken`/
-  `kLowResVideoEncoderToken` on both LAN and WAN for the Medium/Low streams — not stale.
-  `AudioCapabilityClient` now has two real call sites (`audio_screen.dart` and
-  `camera_live_screen.dart`'s Talk button, gated on `_audioCapability?.hasSpeaker`, ~line 1029).
-  `TalkUriClient`, `BboxOverlayClient`/`LoiteringDurationClient` (+ WAN mirrors), and
-  `WanLocalStorageClient` all re-confirmed exactly as the prior report described (see 🆕 table).
+| Status | Count | Meaning |
+|---|---|---|
+| 🆕 Available, no UI yet | 0 | — see note below |
+
+Only two client classes were found with zero references anywhere in `lib/`: `OnvifRecordingClient`
+and `OnvifSearchClient`. Both are explicitly marked in `docs/client_code/camera_api.md` as
+**"Superseded, not for integration"** (replaced by `RecordingsClient`'s plain-REST design after
+the sibling app found ONVIF Search's job-polling model a poor fit for a phone client) — so they
+are not listed as 🆕 gaps. `WanLiveViewClient` also shows no direct reference, but its concrete
+implementation `AwsWanLiveViewClient` (used extensively in `live_view_controller.dart`) is the
+class the codebase actually calls — a naming variant, not a gap. Every other documented capability,
+including recently-added ones (`LoiteringDurationClient`, `BboxOverlayClient`, `HealthClient`/
+`WanHealthClient`, `DeterrenceClient`/`WanDeterrenceClient`, `TalkUriClient`), is already
+referenced from a screen or the `app_state` controller that feeds one — this app's `camera_api`
+integration is broad. Auth (`auth_api`) is fully wired: all 10 `AuthController` methods
+(`signUp`/`confirmSignUp`/`resendConfirmationCode`/`signIn`/`awsCredentials`/`forgotPassword`/
+`confirmForgotPassword`/`changePassword`/`signOut`/`restore`) are called from exactly the screens
+`auth_api.md` maps them to. `alerts_api`'s `CameraAlertsHub` is wired via
+`lib/app_state/alerts_controller.dart` (consumed by `alerts_screen.dart`).
 
 ---
 
-## Quick Wins (⚠️ — client code exists, just needs wiring)
+## ⚠️ Pending, undocumented `client_code_inbox/packages/camera_api` update
 
-Sorted smallest-gap-first. All five detection-enable toggles follow the exact pattern already
-proven working in `person_detection_screen.dart` — that screen calls
-`EventPreferencesClient(nuraeye).setEventPreferences({...})` /
-`WanEventPreferencesClient(thingName).setEventPreferences({...})` around its `_enabled` toggle;
-the other four detection screens have an identical `_enabled` bool wired only to local
-`Camera` model state, never sent to the camera.
+`git status` shows a large, currently **modified/added/deleted** set of files under
+`client_code_inbox/packages/camera_api/` that the senior engineer has dropped but that have
+**not** gone through `client-code-docs` review or `integrate-client-code` yet. Per this audit's
+scope, inbox content is treated as "incoming, not yet real" and was **not** used for any ✅/⚠️/❌
+classification above — but several of these files touch the same WAN/streaming clients this
+report just classified as ✅ wired (`WanLiveViewClient`, `AwsWanLiveViewClient`,
+`IotCommandClient`, `WanDeviceIdentityClient`, `WanAuth`, `OnvifDeviceClient`), plus a brand-new
+`kvs_media/`/`media/` module replacing the deleted `kvs_playback_client.dart`. **Treat this
+report's WAN/streaming-related ✅ classifications (`camera_live_screen.dart`,
+`live_view_controller.dart`'s WAN paths, `wifi_config_screen.dart`/`camera_info_screen.dart`'s
+`OnvifDeviceClient` usage) as provisional until this drop is reviewed** — the currently-integrated
+`packages/camera_api` behavior these screens call may not match what's coming.
+
+Changed files (`git status --porcelain` under `client_code_inbox/packages/camera_api/`):
+
+```
+M  API_REFERENCE.md
+M  SETTINGS_API_GUIDE.md
+M  STREAMING_GUIDE.md
+M  lib/camera_api.dart
+M  lib/src/lan/onvif/onvif_device_client.dart
+M  lib/src/wan/aws_sigv4.dart
+M  lib/src/wan/aws_wan_live_view_client.dart
+M  lib/src/wan/iot_command_client.dart
+D  lib/src/wan/kvs_playback_client.dart
+M  lib/src/wan/wan_auth.dart
+M  lib/src/wan/wan_device_identity_client.dart
+M  lib/src/wan/wan_live_view_client.dart
+M  test/iot_command_client_test.dart
+D  test/kvs_playback_client_test.dart
+?? lib/src/media/                (new, untracked)
+?? lib/src/wan/kvs_media/        (new, untracked)
+?? test/fixtures/                (new, untracked)
+?? test/mkv_demuxer_test.dart    (new, untracked)
+```
+
+Recommended next step: run `client-code-docs` on the changed/new files before relying on this
+report's WAN/streaming rows for planning.
+
+---
+
+## Quick Wins (⚠️ — client code exists, integrate now)
+
+Sorted smallest-remaining-gap-first.
 
 | Screen (file) | Client code covering it | What's missing | Est. effort |
 |---|---|---|---|
-| `lib/screens/camera_settings/motion_detection_screen.dart` | `docs/client_code/camera_api.md` → `EventPreferencesClient`/`WanEventPreferencesClient` | `_save()` (line ~106) never calls `EventPreferencesClient`/`WanEventPreferencesClient.setEventPreferences({'motion': _enabled})`; only writes `Camera.motionDetectionEnabled` locally. No `getEventPreferences` call on load either. | S |
-| `lib/screens/camera_settings/vehicle_detection_screen.dart` | same | Same gap as motion — `_save()` line ~106 doesn't call `setEventPreferences`. | S |
-| `lib/screens/camera_settings/intrusion_detection_screen.dart` | same | No `_save`/API call found at all for the `_enabled` toggle — writes only to `Camera.intrusionDetectionEnabled`. Also has zone-drawing UI that may map to `MaskClient`/`WanMaskClient` (unconfirmed — cross-check zone semantics with the senior before wiring). | S/M |
-| `lib/screens/camera_settings/line_crossing_screen.dart` | same | Same as intrusion — `_enabled` toggle not sent via `EventPreferencesClient`. | S/M |
-| `lib/screens/camera_settings/parking_monitoring_screen.dart` | same, **if** `"parking"`/wrong-bay is a key `CapabilitiesClient.supportedEventTypes` actually reports | `_enabled` toggle (line ~60/287) not sent via `EventPreferencesClient`. Verify with the senior first whether parking monitoring is camera-side-gated at all, or purely an app-side zone feature — if the camera has no such event-type key this is actually ❌, not ⚠️. | S (pending verification) |
-| `lib/screens/events/events_screen.dart` | `docs/client_code/camera_api.md` → `RecordingsClient` (already wired for real clip playback in `camera_live_screen.dart`'s Playback tab) | The day-timeline "recording coverage" band still uses `const _mockRecordedRanges` (line 15) instead of a real `RecordingsClient.getRecordings()`-derived coverage list. | M |
-
-`/integrate-client-code` (or `/client-pipeline`) can close each of these — the client class is
-already documented and already has a working call-site pattern elsewhere in the app to copy.
+| `lib/screens/events/events_screen.dart` | `packages/camera_api/API_REFERENCE.md` § `RecordingsClient` (`getRecordings`) — already imported/used elsewhere in `lib/screens/camera_live/camera_live_screen.dart` | The `EVT-025` recording-coverage band still renders the hardcoded `const _mockRecordedRanges` (line 16) instead of a `RecordingsClient.getRecordings()`-derived `List<TimelineRange>`, same pattern `camera_live_screen.dart`'s Playback tab already uses | S |
+| `lib/screens/events/event_detail_screen.dart` | `RecordingsClient.downloadClip()`/clip-URI methods (`API_REFERENCE.md` § `RecordingsClient`) | `_MediaView` is thumbnail-only by explicit design (dummy video removed 2026-09-07 "per direct user request") — no inline clip playback wired to a real per-event clip URL, even though `RecordingsClient` now supports exactly that (it's already used for playback in `camera_live_screen.dart`) | M |
+| `lib/app_state/events_controller.dart` (feeds `events_screen.dart`, `events_summary_screen.dart`, `event_detail_screen.dart`) | `RecordingsClient.getRecordings()` | `_seedEvents()` (line 18) returns a fixed, hardcoded `List<RecordedEvent>` — the controller never calls into `camera_api` at all, so every event-related screen (list, detail, day/week/month summary chart) is downstream of this one hardcoded seed | M |
 
 ---
 
-## Blocked (needs new client code from the senior)
+## Blocked (needs new client code)
 
-No `docs/client_code/*.md` entry, and nothing in `packages/camera_api` covers these — a new file
-from the senior engineer is needed before `/integrate-client-code` applies.
+Nothing in `docs/client_code/` (or `packages/camera_api`/`packages/auth_api`) covers these needs
+yet — each needs a new file/capability from the senior engineer before `integrate-client-code` can
+do anything.
 
-| Screen (file) | What's missing |
-|---|---|
-| `lib/screens/account/active_sessions_screen.dart` | Static mock session list (own doc comment admits it) — no session-listing API exists anywhere (`auth_api` has no such endpoint; `WanDeviceIdentityClient` was only ever a *candidate*, per `camera_api.md`, never confirmed as the right fit). |
-| `lib/screens/account/users_invites_screen.dart` | Static mock users/invites list — no user-management/invite API; `HomesController` is local-only state (confirmed: no `http`/network client in `homes_controller.dart`). |
-| `lib/screens/account/create_user_screen.dart` | Same — writes only to local `HomesController` state, no backend call. |
-| `lib/screens/account/invite_user_screen.dart` | Same. |
-| `lib/screens/account/camera_access_screen.dart` | Same — camera-access-scope editing is local-only. |
-| `lib/screens/alerts/alert_detail_screen.dart` | No real alert-clip API — screen intentionally shows a snapshot-only placeholder (own doc comment, "removed the dummy video per direct user request"), correctly not faking data, but the underlying capability doesn't exist yet. |
-| `lib/screens/events/event_detail_screen.dart` | Same — thumbnail-only, no real event-clip API. |
-| `lib/screens/events/events_summary_screen.dart` | Own doc comment: "Mock/local data only — no backend/CCTV protocol" for the per-day activity chart. |
+**Camera-side capabilities with no matching client:**
+- `lib/screens/camera_settings/recording_screen.dart` — Continuous/Scheduled/Event-Triggered/Off
+  recording mode + day/time schedule editor. Explicitly documented in the screen's own header
+  comment as "Persisted through `HomesController.updateCamera`" — local app state only, no
+  `camera_api` call. `SETTINGS_API_GUIDE.md` has no "recording mode/schedule" section (closest
+  neighbors — Local Storage, Event Preferences — don't cover it).
+- `lib/screens/camera_settings/parking_monitoring_screen.dart` — per-zone vehicle occupancy
+  classification (Marked-Bay / Open-Area / Restricted zones). The screen's own header comment
+  says this directly: **"Entirely local-only for now — no `camera_api` capability exists yet for
+  per-zone vehicle occupancy classification (only a plain `VehicleDetected` boolean exists,
+  confirmed via `ui-api-gap-audit`)."**
 
-Note: `account_screen.dart`'s `_mockAppVersion` constant is not a real gap (app version isn't a
-camera/backend concern) and is excluded from the count above.
+**Account/session capabilities with no matching client:**
+- `lib/screens/account/active_sessions_screen.dart` — list of devices signed into the account.
+  `docs/client_code/camera_api.md`'s screen-mapping table points `WanDeviceIdentityClient` at this
+  screen ("Authentication" card), but `WanDeviceIdentityClient` (per `API_REFERENCE.md` §1283) only
+  covers a *camera's* name/location/timezone/password/reboot — nothing about listing a *phone
+  account's* active Cognito sessions. `auth_api.md`'s `AuthController` exposes only the current
+  single `session`, no multi-device listing endpoint. That screen-mapping row appears stale/
+  mistaken; flag for correction next time `camera_api.md` is touched.
+- `lib/screens/account/users_invites_screen.dart`, `create_user_screen.dart`,
+  `invite_user_screen.dart`, `camera_access_screen.dart` — household member/invite management and
+  per-member camera-access scopes. Each screen's own header comment confirms this is local-widget-
+  state only ("static mock data held in local widget state", "no auth backend to store them",
+  "caller only adds the result to its local pending-invites list", "returned scope is only held in
+  the caller's local widget state"). `auth_api.md` documents only single-account sign-up/sign-in/
+  session — no multi-user/household/invite surface exists in any documented client.
+
+**No backend concept documented at all:**
+- `lib/screens/camera_live/ai_mode_screen.dart` — natural-language object/person query over a
+  captured frame. `_ask()` (line 278) does `await Future<void>.delayed(...900ms)` then always
+  returns a canned "AI object recognition isn't connected yet" / "AI search isn't connected yet"
+  string. No AI/vision-language client is documented anywhere (the on-device chatbot was removed
+  per commit `852df01`).
+- `lib/screens/account/notification_preferences_screen.dart` — push/email alert-type toggles and
+  quiet-hours. Screen's own header comment: "No notification backend is wired up yet... every
+  toggle just lives in local widget state — nothing is actually sent." Distinct from `alerts_api`'s
+  `CameraAlertsHub` (which delivers live alerts once received) — no documented API exists for
+  *subscribing/opting into* categories of alerts.
 
 ---
 
-## Available APIs With No UI Yet (🆕)
+## Available APIs With No UI Yet
 
-| Capability (class/method) | Documented in | Likely screen area | Notes |
-|---|---|---|---|
-| `TalkUriClient.getTalkUri()` (`lib/src/lan/nuraeye/talk_uri_client.dart`) | `API_REFERENCE.md` §"TalkUriClient" (not yet in `docs/client_code/`) | `camera_live_screen.dart` (two-way talk) | Not a functional gap — talk already works via `LiveViewController.startTalk`/`endTalk` (WebRTC renegotiation on the existing live-view connection). This is a newer, dedicated RTSPS-based module (port 560) that duplicates that path; adopting it would be a transport swap, not a new feature. Flag to the senior/user before treating as a priority. |
-| `WanLocalStorageClient` (`lib/src/wan/wan_local_storage_client.dart`) — `getStatus()`/`setEnabled()` | `API_REFERENCE.md` §"WanLocalStorageClient" | `camera_settings/storage_screen.dart` | LAN counterpart `LocalStorageClient` **is** wired into `storage_screen.dart` (confirmed, ~line 141); grepped `storage_screen.dart` for any `Wan`/transport-fallback reference — none found. Storage settings currently have no WAN fallback path at all. |
-| `CloudStreamingLanClient.getCloudStreamingStatus()` (`lib/src/lan/nuraeye/cloud_streaming_client.dart`) | `API_REFERENCE.md` §"CloudStreamingLanClient" | `camera_live_screen.dart` / `live_view_controller.dart` | Narrowed from the prior report's vague "unused surface" note: `CloudStreamingLanClient` is instantiated in exactly one place in `live_view_controller.dart` and only `.stopCloudStreaming()` is called there (opportunistic LAN-first stop). `.getCloudStreamingStatus()` — the LAN status check — is never called; all status polling goes through `AwsWanLiveViewClient.getCloudStreamingStatus()` (WAN) instead, even when LAN is reachable. |
-| `OnvifRecordingClient` / `OnvifSearchClient` | `camera_api.md` — explicitly marked **superseded**, not for integration | n/a | Confirmed zero references anywhere in `lib/`. The team deliberately moved to `RecordingsClient` (plain REST) instead — do not wire these. (`OnvifReplayControlClient`, previously grouped with these two, is **not** in this bullet any more — see the correction note above, it is now genuinely wired into `camera_live_screen.dart`'s Playback tab.) |
-| `OnvifDeviceClient.setDeviceLocation()` / `WanDeviceIdentityClient.setDeviceLocation()` (+ reading `DeviceIdentity.location`) | `API_REFERENCE.md` §"OnvifDeviceClient"/"WanDeviceIdentityClient", `SETTINGS_API_GUIDE.md` §"Device Identity" | `camera_info_screen.dart` | Narrowed from the prior report: `setDeviceName`/`setTimeZone`/`setUserPassword` are all confirmed wired (LAN with WAN fallback) in `camera_info_screen.dart`. Only the camera-side **location** scope field has no UI — the screen's existing "Location" section (`CAMINFO-004`, a Home dropdown) is an unrelated local Home/Room-assignment feature backed by `HomesController`, not this ONVIF field. Would need a new editable field — plan-before-code rule applies. |
-| Recording-coverage read via `RecordingsClient.getRecordings()` for `events_screen.dart`'s day-timeline band | `camera_api.md` (already proven elsewhere — see correction note above) | `events/events_screen.dart` | `RecordingsClient` is now proven in two real call sites in `camera_live_screen.dart` (`getRecordings()` for clip listing, `downloadClip()` for gallery-save); `events_screen.dart`'s day-timeline still uses `const _mockRecordedRanges` (confirmed, line 16/247) instead of deriving coverage from a real call. Same item as the Quick Win above — listed here too since the client is already integrated elsewhere in the app. |
-
-This work is new-screen/new-element territory in one case (adding a Location field would be a new
-UI element) — per this repo's plan-before-code rule, any actual UI build here needs an element
-inventory presented and confirmed first, it is not a same-day `/integrate-client-code` job like
-the Quick Wins above.
+None found as a genuine gap. See the Summary-counts note above: the only two fully-unreferenced
+client classes (`OnvifRecordingClient`, `OnvifSearchClient`) are explicitly superseded/excluded
+from integration per `docs/client_code/camera_api.md`, and `WanLiveViewClient` is a naming variant
+of the already-wired `AwsWanLiveViewClient`. Every other documented `camera_api`, `auth_api`, and
+`alerts_api` capability — including the newer `LoiteringDurationClient`, `BboxOverlayClient`,
+`HealthClient`/`WanHealthClient`, and `DeterrenceClient`/`WanDeterrenceClient` — is already
+referenced from at least one screen or the controller feeding it.
 
 ---
 
-## Full Detail Table (Part A)
+## Full detail table
 
-Screens not listed individually below were checked and found ✅ fully wired to their documented
-client code with no mock/TODO markers found (imports confirmed against `docs/client_code/*.md`
-and grepped for real client-class usage): `login_screen`, `signup_screen`,
-`confirm_signup_screen`, `forgot_password_screen`, `splash_screen`, `change_password_screen`,
-`dashboard_screen`, `camera_live_screen` (live view, snapshot, playback, deterrence, talk, stream
-quality — all real), `ai_mode_screen` (local zone-drawing tool, no backend needed by design),
-`camera_info_screen` (device sync, health, name, timezone), `imaging_screen`, `night_mode_screen`,
-`video_mode_screen`, `video_encoder_screen`, `video_stream_encoder_screen`, `on_screen_display_screen`,
-`privacy_mode_screen`, `tags_screen`, `wifi_config_screen`, `danger_zone_screen` (reboot/factory
-reset), `audio_screen`, `person_detection_screen`, `storage_screen`, `alerts_screen`,
-`alert_settings_screen`, `multiview_screen`, `multiview_reorder_screen`, `scanned_devices_screen`,
-`scanning_popup`, `add_camera_manually_dialog`, `manage_homes_screen`, `account_settings_screen`,
-`notification_preferences_screen` and `help_support_screen` (static content screens, no API
-needed by design), `camera_settings_screen`/`video_display_screen`/`detections_screen` (pure
-navigation hubs, no elements of their own).
+Screen-level rows for fully ✅/❌ screens (element-level detail already given above for the
+Quick Wins / Blocked entries to avoid repetition).
 
 | Screen (file) | Element/action | Status | Client code covering it | Notes |
 |---|---|---|---|---|
-| `camera_settings/motion_detection_screen.dart` | Enable/disable toggle | ⚠️ | `camera_api.md` (`EventPreferencesClient`) | Saves only to local `Camera` model |
-| `camera_settings/vehicle_detection_screen.dart` | Enable/disable toggle | ⚠️ | `camera_api.md` (`EventPreferencesClient`) | Same |
-| `camera_settings/intrusion_detection_screen.dart` | Enable/disable toggle | ⚠️ | `camera_api.md` (`EventPreferencesClient`) | Same; zone UI may separately map to `MaskClient` |
-| `camera_settings/line_crossing_screen.dart` | Enable/disable toggle | ⚠️ | `camera_api.md` (`EventPreferencesClient`) | Same |
-| `camera_settings/parking_monitoring_screen.dart` | Enable/disable toggle | ⚠️ (pending verification) | `camera_api.md` (`EventPreferencesClient`) | Confirm "parking" is a real supported event-type key first |
-| `events/events_screen.dart` | Day-timeline recording-coverage band | ⚠️ | `camera_api.md` (`RecordingsClient`, already proven in `camera_live_screen.dart`) | Uses `const _mockRecordedRanges` |
-| `account/active_sessions_screen.dart` | Session list | ❌ | — | Static mock, own doc admits it |
-| `account/users_invites_screen.dart` | Users/invites list | ❌ | — | Static mock, local `HomesController` only |
-| `account/create_user_screen.dart` | Create-user form | ❌ | — | Local state only |
-| `account/invite_user_screen.dart` | Invite form | ❌ | — | Local state only |
-| `account/camera_access_screen.dart` | Access-scope editor | ❌ | — | Local state only |
-| `alerts/alert_detail_screen.dart` | Clip/video playback | ❌ | — | Snapshot-only by design, no clip API |
-| `events/event_detail_screen.dart` | Clip/video playback | ❌ | — | Thumbnail-only by design, no clip API |
-| `events/events_summary_screen.dart` | Per-day activity chart | ❌ | — | Own doc: "Mock/local data only" |
-| `camera_settings/video_stream_encoder_screen.dart` | Resolution tokens, encoder get/set | ✅ (re-verified) | `API_REFERENCE.md` (`OnvifVideoEncoderClient.getProfiles`, `kMediumResVideoEncoderToken`/`kLowResVideoEncoderToken`) | Confirmed real calls, not stale ⚠️ |
-| `camera_settings/video_encoder_screen.dart` | Encoder settings | ✅ (re-verified) | same | Confirmed real calls |
-| `camera_live/camera_live_screen.dart` | Stream Quality picker | ✅ (re-verified) | `LiveViewController.loadLanProfiles`/`setPreferredProfile` | Confirmed real calls, LIVE-059 |
-| `camera_settings/person_detection_screen.dart` | Loitering duration, bbox overlay toggle | ✅ (re-verified, corrects stale doc) | `LoiteringDurationClient`/`WanLoiteringDurationClient`, `BboxOverlayClient`/`WanBboxOverlayClient` | `camera_api.md`'s "no matching UI yet" note is now outdated |
-| `camera_settings/camera_info_screen.dart` | Health section | ✅ (re-verified, corrects stale doc) | `HealthClient`/`WanHealthClient` via `camera_sync.dart` | `camera_api.md`'s "mock data, no real API call" note is now outdated |
+| `login/login_screen.dart` | Sign in | ✅ | `auth_api.md` (`AuthController.signIn`) | |
+| `login/forgot_password_screen.dart` | Request/confirm reset code | ✅ | `auth_api.md` (`forgotPassword`/`confirmForgotPassword`) | |
+| `signup/signup_screen.dart` | Sign up | ✅ | `auth_api.md` (`signUp`) | |
+| `signup/confirm_signup_screen.dart` | Confirm code / resend | ✅ | `auth_api.md` (`confirmSignUp`/`resendConfirmationCode`) | |
+| `splash/splash_screen.dart` | Session restore / initial route | ✅ | `auth_api.md` (`AuthController.restore`) | |
+| `account/account_screen.dart` | Sign out | ✅ | `auth_api.md` (`signOut`) | `_mockAppVersion` literal string is cosmetic, not a data gap |
+| `account/change_password_screen.dart` | Change password | ✅ | `auth_api.md` (`changePassword`) | |
+| `account/active_sessions_screen.dart` | Device list, remote sign-out | ❌ | — | see Blocked |
+| `account/users_invites_screen.dart` | Member/invite list | ❌ | — | see Blocked |
+| `account/create_user_screen.dart` | Create member | ❌ | — | see Blocked |
+| `account/invite_user_screen.dart` | Send invite | ❌ | — | see Blocked |
+| `account/camera_access_screen.dart` | Per-camera access scope picker | ❌ | — | see Blocked |
+| `account/notification_preferences_screen.dart` | Alert-category/quiet-hours toggles | ❌ | — | see Blocked |
+| `account/account_settings_screen.dart` | Navigation menu | N/A | — | Pure nav to sub-screens above |
+| `account/help_support_screen.dart` | FAQ list | N/A | — | Static content, no API needed |
+| `alerts/alerts_screen.dart` | Live alert list/filter | ✅ | `camera_alerts_hub.md` (`CameraAlertsHub.events`, via `AlertsController`) | |
+| `alerts/alert_detail_screen.dart` | Alert detail view | ✅ | `camera_alerts_hub.md` / `alerts_api_config.md` (`Alert` data passed in) | Media view is thumbnail-only by design (dummy video removed 2026-09-07) |
+| `alerts/alert_settings_screen.dart` | Deterrence durations, response actions | ✅ | `camera_api.md` (`DeterrenceClient`/`WanDeterrenceClient`) | |
+| `events/events_screen.dart` | Event list/filter | ✅ | `events_controller.dart` (real, but seeded — see Quick Wins) | EVT-025 recording band ⚠️, see Quick Wins |
+| `events/event_detail_screen.dart` | Event detail | ⚠️ | `RecordingsClient` | see Quick Wins |
+| `events/events_summary_screen.dart` | Analytics/breakdown charts | ⚠️ (inherited) | `events_controller.dart` | Derived entirely from the same seeded `EventsController` data; screen's own comment: "Mock/local data only" |
+| `camera_live/camera_live_screen.dart` | Live view, playback, snapshot, deterrence, talk | ✅ | `camera_api.md` (`SnapshotClient`, `WebRtcUriClient`/`AwsWanLiveViewClient`, `RecordingsClient`, `DeterrenceClient`/`WanDeterrenceClient`, `TalkUriClient`) | Extensively wired; see inbox callout re: WAN/streaming provisional status |
+| `camera_live/ai_mode_screen.dart` | Object/person Q&A | ❌ | — | see Blocked |
+| `camera_settings/audio_screen.dart` | Mic gain, speaker volume | ✅ | `camera_api.md` (`AudioCapabilityClient`/`SpeakerVolumeClient`/`AudioVolumeClient`) | |
+| `camera_settings/camera_info_screen.dart` | Device identity, health, timezone | ✅ | `camera_api.md` (`OnvifDeviceClient`, `WanHealthClient`/`HealthClient` via `clockSyncUncertain`) | Timezone picker falls back to a static `_dummyTimezones` list only when the camera reports none — acceptable fallback, not a wiring gap |
+| `camera_settings/danger_zone_screen.dart` | Reboot / factory reset | ✅ | `camera_api.md` (`OnvifDeviceClient`/`WanDeviceIdentityClient`) | |
+| `camera_settings/imaging_screen.dart` | Brightness/contrast/WDR/etc. | ✅ | `camera_api.md` (`OnvifImagingClient`/`WanImagingClient`/`WanImageQualityClient`) | |
+| `camera_settings/night_mode_screen.dart` | Night vision type | ✅ | `camera_api.md` (`NightVisionClient`/`WanNightVisionClient`) | |
+| `camera_settings/on_screen_display_screen.dart` | OSD text/position | ✅ | `camera_api.md` (`OsdClient`/`WanOsdClient`) | |
+| `camera_settings/person_detection_screen.dart` | Loitering duration, bbox overlay | ✅ | `camera_api.md` (`LoiteringDurationClient`/`WanLoiteringDurationClient`, `BboxOverlayClient`/`WanBboxOverlayClient`) | `camera_api.md`'s own "New in the 2026-09-07 drop" table still lists this as an unwired gap — code has since caught up; doc is stale |
+| `camera_settings/privacy_mode_screen.dart` | Privacy masks/toggle | ✅ | `camera_api.md` (`MaskClient`/`WanMaskClient`, `PrivacyModeClient`/`WanPrivacyModeClient`) | |
+| `camera_settings/storage_screen.dart` | SD card status/format | ✅ | `camera_api.md` (`LocalStorageClient`/`WanLocalStorageClient`) | |
+| `camera_settings/video_mode_screen.dart` | Mirror/flip | ✅ | `camera_api.md` (`MirrorFlipClient`/`WanMirrorFlipClient`) | |
+| `camera_settings/video_encoder_screen.dart` | Per-stream summary/landing list | ✅ | Reads already-synced `Camera` fields | Pure landing list; real settings wiring is in `video_stream_encoder_screen.dart` |
+| `camera_settings/video_stream_encoder_screen.dart` | Resolution/bitrate/codec per stream | ✅ | `camera_api.md` (`OnvifVideoEncoderClient`/`WanVideoEncoderClient`) | |
+| `camera_settings/wifi_config_screen.dart` | WiFi SSID/signal/setup | ✅ | `camera_api.md` (`NetworkInfoClient`) | |
+| `camera_settings/recording_screen.dart` | Recording mode + schedule | ❌ | — | see Blocked |
+| `camera_settings/parking_monitoring_screen.dart` | Parking zone config | ❌ | — | see Blocked |
+| `camera_settings/intrusion_detection_screen.dart` | Intrusion zone config | ✅ | `camera_api.md` (via `app_state/camera_sync.dart` → `MaskClient`-family) | |
+| `camera_settings/line_crossing_screen.dart` | Line-crossing config | ✅ | `camera_api.md` (via `camera_sync.dart`) | |
+| `camera_settings/motion_detection_screen.dart` | Motion detection toggle | ✅ | `camera_api.md` (via `camera_sync.dart`) | |
+| `camera_settings/vehicle_detection_screen.dart` | Vehicle detection toggle | ✅ | `camera_api.md` (via `camera_sync.dart`) | |
+| `camera_settings/tags_screen.dart` | Camera tags | ✅ | `camera_api.md` (via `camera_sync.dart`) | |
+| `camera_settings/detections_screen.dart`, `video_display_screen.dart`, `camera_settings_screen.dart` | Navigation menus | N/A | — | Pure nav to sub-screens above |
+| `multiview/multiview_screen.dart` | Grid live view, deterrence | ✅ | `camera_api.md` (`SnapshotClient`, `DeterrenceClient`/`WanDeterrenceClient`) | |
+| `multiview/multiview_reorder_screen.dart` | Reorder tiles | N/A | `homes_controller.dart` | Local ordering preference, no camera-side API needed |
+| `scan/scanned_devices_screen.dart` | LAN discovery, connect | ✅ | `camera_api.md` (`WsDiscoveryClient`) | |
+| `scan/add_camera_manually_dialog.dart` | Manual host entry | ✅ | `camera_api.md` (`CameraConnection`) | |
+| `scan/scanning_popup.dart` | Scan progress UI | N/A | `app_state/camera_scan.dart` | UI shell around the scan controller, no direct element to wire |
+| `dashboard/dashboard_screen.dart` | Camera tiles, quick actions | ✅ | `camera_sync.dart`, `live_view_controller.dart`, `alerts_controller.dart` | Aggregates already-wired controllers; any embedded events preview inherits the `events_controller.dart` seed-data gap above |
+| `homes/manage_homes_screen.dart` | Home/camera list management | N/A | `homes_controller.dart` | Local grouping/naming, no camera-side API needed |
+| `shell/main_shell.dart` | Bottom-nav shell | N/A | — | Pure routing shell |
 
----
+## What this means for next steps
 
-## Full Detail Table (Part B) — selected non-obvious entries
-
-Most of the ~40 capabilities checked map 1:1 to the ✅ screens listed above (Day/Night Mode, WDR,
-Image Quality/Defaults, Mirror/Flip, Anti-Flicker → `imaging_screen`; Privacy Mode/Masks →
-`privacy_mode_screen`; OSD → `on_screen_display_screen`; Event Preferences/Response
-Actions/Loitering/Bbox → `person_detection_screen`; Audio/Speaker Volume →`audio_screen`;
-Snapshot/Preview, Cloud Streaming, WebRTC live-view URI, Deterrence manual trigger → wired inside
-`camera_live_screen.dart`/`multiview_screen.dart` via `camera_sync.dart`/direct client calls;
-WiFi → `wifi_config_screen`; Local Storage (LAN) → `storage_screen`; Recordings (LAN, clip listing
-via `RecordingsClient.getRecordings()`/gallery-save via `.downloadClip()`, live playback via
-`OnvifReplayControlClient.getReplayUri()` + `RtspRemuxProxy` — corrected 2026-09-15, see the
-correction note above) → `camera_live_screen.dart`'s Playback tab; Device Identity/Info/Reboot/
-Factory Reset → `camera_info_screen.dart`/`danger_zone_screen.dart`). The exceptions are listed in
-the 🆕 table above.
-
----
-
-## Method note on this run
-
-This audit combined: (1) a full file listing of `docs/client_code/*.md`,
-`packages/camera_api/API_REFERENCE.md`, and `SETTINGS_API_GUIDE.md` section headers to build the
-capability inventory; (2) targeted `grep` of every client class name across `lib/screens/**` (and
-`lib/app_state/**` where a screen delegates to a controller, e.g. `LiveViewController`,
-`camera_sync.dart`, `HomesController`) to confirm real call sites vs. mentions in comments; (3) a
-repo-wide marker scan (`TODO|FIXME|mock|dummy|placeholder|fake`) across `lib/screens/**` with each
-hit manually read in context to filter out false positives (the great majority were
-`.toDouble()`/`.toStringAsFixed()` matches on "double"). Two claims from the prior report/doc
-comments were found stale and corrected here: `LoiteringDurationClient`/`BboxOverlayClient` and
-`HealthClient`/`WanHealthClient` are now wired, not gaps.
-
-**2026-09-15 refresh method note:** re-read `API_REFERENCE.md`/`SETTINGS_API_GUIDE.md` in full
-against the current package (post-replacement from the `nuraeye-rt` reference app) to rebuild the
-capability inventory, then re-ran the same class-name/method-name `grep` approach across
-`lib/screens/**` and `lib/app_state/**` for every non-plumbing capability, reading each hit's
-surrounding code (not just the grep line) to confirm a real call vs. a doc-comment mention —
-this is what caught `OnvifReplayControlClient`'s real call site at
-`camera_live_screen.dart:3357` (`_replayControl.getReplayUri(...)`), missed by the prior pass.
-Also read `rest_health_client.dart` and `storage_screen.dart`/`camera_info_screen.dart` in full
-to resolve the two previously-"unconfirmed" 🆕 entries definitively rather than re-flagging them.
-Part A, Quick Wins, and Blocked were spot-checked but not re-audited line-by-line this pass — no
-staleness found in the spot checks, so left as-is per the task scope.
+- **⚠️ Quick Wins** (`events_screen.dart`, `event_detail_screen.dart`, `events_controller.dart`):
+  `/integrate-client-code` can close these now — `RecordingsClient` is already documented and
+  already integrated elsewhere in this app (`camera_live_screen.dart`), so this is wiring, not new
+  client work.
+- **❌ Blocked** items (`recording_screen.dart`, `parking_monitoring_screen.dart`,
+  `active_sessions_screen.dart`, `users_invites_screen.dart`, `create_user_screen.dart`,
+  `invite_user_screen.dart`, `camera_access_screen.dart`, `ai_mode_screen.dart`,
+  `notification_preferences_screen.dart`): each needs a new file/capability from the senior
+  engineer first — nothing to integrate yet.
+- **🆕** — none found this pass; nothing here is new-screen/new-element work subject to the
+  plan-before-code rule.

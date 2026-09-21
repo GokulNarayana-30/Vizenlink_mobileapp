@@ -75,3 +75,30 @@
 Playback clip handles (LIVE-023/LIVE-024) are not guarded on leave — they're low-stakes scratch state and are simply lost if the user navigates away before extracting.
 
 LIVE-004/LIVE-037/LIVE-029/LIVE-030 are computed together by `_buildOsdTags` (private helper on `_CameraLiveScreenState`): if two or more of these four tags land on the same corner, `osdStackIndices` (`lib/widgets/live_status_badges.dart`) lines them up side by side, growing inward from that corner's horizontal edge — in Live tag → audio-recording indicator → Bitrate → Signal Strength priority order — instead of letting them render on top of each other.
+
+## Playback tab works over WAN (2026-09-21)
+
+The Playback tab was LAN-only: it listed clips with `RecordingsClient` and streamed them through
+`OnvifReplayControlClient` + `RtspRemuxProxy`, so recorded playback simply did not work
+off-network. It now runs on either transport. No element or design ID changed — the day picker,
+timeline, and controls are the same; only the data and media source behind them differ.
+
+- **Transport selection** — `isWan` is threaded down from `LiveViewController.transport`, never
+  guessed from IP addresses (per `.claude/rules/mobile-app-screen-conventions.md` § LAN/WAN
+  transport selection). It is `null` until live view actually connects, and the tab stays on the
+  LAN path while unknown, reloading once the transport resolves or later flips.
+- **Listing** — `_getRecordings()` picks `RecordingsClient` (LAN) or `WanRecordingsClient` (WAN).
+- **Playback** — a `_ClipSession` abstraction has one implementation per transport:
+  `_LanClipSession` wraps `RtspRemuxProxy`; `_WanClipSession` pairs
+  `WanClipPlaybackClient.startClip()` (the camera pushes the clip into its `<thing>-playback` KVS
+  stream) with a `KvsMediaLiveViewSession` reading it back. `_openClip`'s request-id guarding,
+  assign-before-await and teardown ordering stay single-sourced across both.
+- **One playback session camera-wide** — `_WanClipSession.stop()` stops the media session *and*
+  sends `StopClipPlayback`, and a Start is always preceded by a Stop, so a session the app has
+  forgotten about cannot block the next clip.
+
+**Known difference:** WAN reports no server-side playback cursor, so
+`_ClipSession.lastKnownPositionEpochSeconds` is null there and the timeline cursor follows the
+player's own position. On LAN that value is only a fallback (used before the player reports a
+position of its own), so visible behavior should match — this is the first thing to check on real
+hardware.

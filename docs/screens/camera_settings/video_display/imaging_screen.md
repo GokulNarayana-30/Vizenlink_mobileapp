@@ -19,7 +19,7 @@
 | IMG-007 | Saturation slider | Slider | real min/max from `getImagingOptions().colorSaturation`, else 0–100 fallback |
 | IMG-008 | Sharpness slider | Slider | real min/max from `getImagingOptions().sharpness`, else 0–100 fallback |
 | IMG-012 | WDR toggle | SwitchListTile | hidden outright (not just disabled) when `getImagingOptions().wdrSupported` is `false` — non-HDR sensors have no WDR element at all |
-| IMG-013 | WDR level slider | Slider | 1–100, default 50; only rendered when IMG-012 is enabled and shown |
+| IMG-013 | WDR level slider | Slider | real min/max from `getImagingOptions().wdrLevel`, else 1–100 fallback; default 50; only rendered when IMG-012 is enabled and shown |
 | IMG-009 | White balance selector | SegmentedButton | only shows the modes `getImagingOptions().whiteBalanceModes` actually reports (both Auto/Manual when unverified) |
 | IMG-010 | Exposure selector | SegmentedButton | only shows the modes `getImagingOptions().exposureModes` actually reports (both Auto/Manual when unverified); when set to Manual, reveals IMG-018/IMG-019 below |
 | IMG-018 | Exposure time slider | Slider | only shown when IMG-010 is Manual; real min/max from `getImagingOptions().exposureTime` (ONVIF microseconds), else 100–100,000 fallback; sent on Save only while Manual is selected (omitted, i.e. left unchanged, in Auto) — LAN-only, no WAN fallback exists for this field |

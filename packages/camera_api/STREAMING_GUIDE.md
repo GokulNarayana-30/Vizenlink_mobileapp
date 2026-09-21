@@ -17,8 +17,8 @@ intentionally left as app-level business logic, not something this package provi
 | | LAN — WebRTC | LAN — RTSP fallback | WAN (KVS) |
 |---|---|---|---|
 | When | Phone and camera on the same network, camera build has `WEBRTC_STREAMING` | Same network, but `WEBRTC_STREAMING` disabled camera-side (current default) | Phone away from home, or LAN unreachable |
-| Latency | Sub-second (real-time peer connection) | Low (local remux, no cloud round trip) but not peer-to-peer real-time | Several seconds (HLS segment buffering) |
-| Mechanism | Direct signaling to the camera, then a peer-to-peer media stream | Real RTSP session, remuxed to fMP4 over a local HTTP loopback for `video_player` (§2.5) | Camera pushes to AWS Kinesis Video Streams; phone pulls an HLS URL from AWS |
+| Latency | Sub-second (real-time peer connection) | Low (local remux, no cloud round trip) but not peer-to-peer real-time | ~3s above LAN observed on real hardware (encode → AWS ingestion → `GetMedia` fetch → remux) |
+| Mechanism | Direct signaling to the camera, then a peer-to-peer media stream | Real RTSP session, remuxed to fMP4 over a local HTTP loopback for `video_player` (§2.5) | Camera pushes to AWS Kinesis Video Streams; phone pulls directly via `GetMedia`, remuxed to fMP4 over the same kind of local HTTP loopback (§3) |
 | Audio | Playback only (downlink) | Playback only (downlink) | Playback only (downlink) |
 
 Two-way talk is **not** part of any of these transports — it is a separate, dedicated audio-only
@@ -73,24 +73,17 @@ are ordinary ONVIF profiles, reachable via `GetStreamUri` too, `FR-CF-010`). Thi
 transports it can resolve, are **LAN-only by design** — there is no WAN counterpart and there
 never will be one for either.
 
-**This app's own live view defaults to `Profile_3` and only auto-adjusts within one session
-manually** — background: a real bug (2026-09-08) once shipped a bare `'Profile_1'` string literal
-as the default, so live view requested the NVR/VMS-facing main stream instead of the stream built
-for this app. Fixed by introducing named constants (`kMobileOnlyStreamProfileToken` etc.,
-`live_stream_uri_client.dart`) so the choice is self-documenting at every call site, and by
-disabling `LiveViewController`'s FR-MOB-037 LAN-trouble-detection profile ladder (§10.8) for the
-Live tab's default session — that automatic ladder must never silently step a session from
-`Profile_3` to `Profile_1`/`Profile_2` (or back) on its own, since a background quality change the
-user didn't ask for is confusing regardless of direction.
-
-**Superseded 2026-09-11**: this does *not* mean live view is permanently pinned to `Profile_3` —
-`OnvifVideoEncoderClient.getProfiles()` (Media2 `GetProfiles`) now lets a caller discover every
-profile the camera actually has configured (token/name/resolution), and the Stream Quality picker
-(camera_live_screen.dart's LIVE-058/059) calls `LiveViewController.setPreferredProfile(token)` to
-request a *user-chosen* profile directly — a deliberate, explicit switch, not the old automatic
-ladder. `Profile_1`/`Profile_2` are legitimate choices for a user who explicitly picks "High"/etc.;
-what's still forbidden is the *automatic*, un-requested ladder ever moving the Live tab's default
-session off whatever profile the user (or the initial default) selected.
+**This app's own live view always requests `Profile_3` and only `Profile_3`** — direct user
+instruction, 2026-09-08, after a real bug shipped the opposite: `LiveViewScreen`'s default
+`profileToken` was a bare `'Profile_1'` string literal, so live view was requesting the
+NVR/VMS-facing main stream instead of the stream actually built for this app. Fixed by
+introducing named constants (`kMobileOnlyStreamProfileToken` etc., `live_stream_uri_client.dart`)
+so the choice is self-documenting at every call site, and by collapsing `LiveViewScreen`'s
+FR-MOB-037 LAN-trouble-detection profile ladder (§10.8) down to a single rung — live view must
+never fall through to `Profile_1`/`Profile_2` under any circumstance, including sustained LAN
+trouble that ladder used to react to by switching ONVIF quality tiers. `Profile_1`/`Profile_2`
+remain real, valid profiles for ONVIF NVR/VMS clients (§1) — just never ones this app's own live
+view requests.
 
 Branch on `output.transport`, not on any assumption about which one you'll get:
 - `"webrtc"`: `url` is **plain `http://`, not `https://`** — the signaling socket is
@@ -164,12 +157,14 @@ to the player. Instead:
    real-hardware history) — same protocol engine, with clip-specific concepts (seek, a bound
    clip's start/end epoch) dropped, since live view has neither.
 2. `RtspLiveViewProxy` (`rtsp_live_view_proxy.dart`, adapted from `rtsp_remux_proxy.dart`) remuxes
-   what that session reads into fragmented MP4 (`fmp4_muxer.dart`, reused unchanged — its
-   `totalDurationSeconds: null` is exactly the "unbounded live content" signal ExoPlayer needs)
-   and serves it over a local HTTP loopback server (`http://127.0.0.1:<port>/live.mp4`).
+   what that session reads into fragmented MP4 (`camera_api`'s `media/fmp4_muxer.dart`'s
+   `RtspFmp4Muxer`, reused unchanged — its `totalDurationSeconds: null` is exactly the "unbounded
+   live content" signal ExoPlayer needs) and serves it over a local HTTP loopback server
+   (`http://127.0.0.1:<port>/live.mp4`).
 3. `LiveViewScreen` points `VideoPlayerController.networkUrl()` at that loopback URL — from there
-   it's rendered, muted, and snapshotted through the exact same code path the WAN (KVS HLS)
-   transport already uses (both are just "a `video_player` session fed by a local/remote URI").
+   it's rendered, muted, and snapshotted through the exact same code path the WAN (KVS `GetMedia`)
+   transport already uses (both are just "a `video_player` session fed by a local loopback URI" —
+   `KvsMediaLiveViewSession` reuses this same `RtspFmp4Muxer` too, see §3).
 
 No seek, no pause/resume at the RTSP level (the camera's live-view RTSPS listener has no `PAUSE`
 method — same limitation `../recordings/rtsp/rtsp_remux_proxy.dart`'s own doc describes for clip
@@ -178,11 +173,23 @@ playback). A dropped connection surfaces as the proxy's `isSessionEnded` going t
 freshly-resolved `getLiveStreamUri()` target, mirroring §2.4's WebRTC reconnect posture (a plain
 retry, no special-casing).
 
-## 3. WAN path — the four-step sequence
+## 3. WAN path — the three-step sequence
+
+**Rewritten 2026-09-17 (`GetMedia` replaces HLS entirely) — this section previously described a
+four-step HLS-based sequence (`resolvePlaybackUri` → a long-lived signed HLS URL → any HLS-capable
+player). That path is gone.** It was replaced outright, not just for H.265 (which AWS's HLS/DASH
+session-URL APIs reject outright — `UnsupportedStreamMediaTypeException` on
+`GetHLSStreamingSessionURL`, `GetDASHStreamingSessionURL` has the identical restriction despite
+more permissive-sounding prose) but for H.264 too, so the app has exactly one WAN playback code
+path regardless of codec. If you're looking at an old integration or a stale mental model built
+before 2026-09-17, the mental model to discard is "resolve a URL, hand it to an HLS player, the
+URL stays valid for hours." The mental model below replaces it.
 
 There is no single "connect" call — WAN live view is a sequence of independent steps, each with
-its own failure modes. All four go through AWS IoT Core (MQTT command relay) and, for playback
-resolution, a Lambda proxy — never a direct-from-app AWS SDK call (see §4 for why).
+its own failure modes. Steps 1-2 go through AWS IoT Core (MQTT command relay); step 3 vends
+short-lived AWS credentials via a Lambda proxy and then talks to AWS KVS's `GetMedia` API
+**directly from the app** — never a direct-from-app AWS SDK call for anything else in this
+sequence (see §4 for why Steps 1-2 still go through the camera).
 
 **`FR-CF-154` (2026-09-14): quality-selective, reference-counted, per-viewer leases.** Every KVS
 stream (`high`/`medium`/`low`, one per `StreamQuality` value, named `<thing_name>-high`/
@@ -203,6 +210,18 @@ increments the camera-side reference count — no new AWS session). Returns the 
 succeeding only means the command was delivered — it does not mean video is flowing yet (see §4
 on why `stream_status: active` isn't sufficient evidence either).
 
+**Only call this when the user actually wants to watch — never from a screen's own "just check
+reachability" path.** Direct user hardware report, 2026-09-18: each `quality` tier is a real,
+individually-billed AWS resource (see the `FR-CF-154` note above), and this app's own
+`LiveViewController` was calling this step unconditionally from several silent "ping the camera"
+call sites (screen open, network reconnect, app resume) — starting real cloud billing every time
+the live-view screen was merely opened, not actually watched. Fixed via
+`LiveViewController.start({bool allowWan})`: every eager/silent call site passes `allowWan: false`
+(a cheap LAN-only reachability check, stopping short of ever reaching this step); only an explicit
+user action (tapping play, or a manual retry) uses the default `allowWan: true`. Any WAN client you
+build should keep the same separation between "is the camera reachable" and "the user wants to
+watch" as two distinct questions, with only the second one ever reaching this call.
+
 ### Step 2 — `GetCloudStreamingStatus(token)`, with retry — also the heartbeat
 
 Request/response MQTT command (`getCloudStreamingStatus(token)`) returning one of:
@@ -222,25 +241,39 @@ for the lifetime of the session, not just once at connect time — this app's ow
 health poll (`LiveViewController._checkWanHealth`, default every 10s) does this for free, since
 its existing health check already calls `getCloudStreamingStatus` on that cadence.
 
-### Step 3 — `resolvePlaybackUri(quality)` (via the Lambda relay)
+### Step 3 — `startMediaSession(quality)` → a live `KvsMediaLiveViewSession`
 
-Once `active`, resolve a playable URL (`resolvePlaybackUri(quality)`, backed by
-`KvsPlaybackClient` → the deployed `cloud_backend/kvs_playback_lambda` Function URL, which calls
-AWS KVS's `GetDataEndpoint`/`GetHLSStreamingSessionURL` under its own execution role for the
-`<thing_name>-<quality>` stream name — see §4). The returned HLS session URL is long-lived (12h,
-`Expires=43200` server-side) — you do not need to re-resolve it for every reconnect within that
-window, only when it's actually expired or invalid (see §5's caveat on when this assumption
-breaks).
+Once `active`, start real playback: `WanLiveViewClient.startMediaSession(quality)` internally (a)
+vends short-lived, stream-scoped AWS credentials via the Lambda proxy
+(`KvsMediaViewerCredentialsClient` → the deployed `cloud_backend/kvs_playback_lambda` Function
+URL's `mode=media` action — the Lambda's execution role is used only to *mint* these credentials;
+no media bytes ever pass through the Lambda itself), then (b) opens a **direct** signed AWS KVS
+`GetMedia` connection from the phone (`KvsGetMediaClient`), demuxes the raw MKV byte stream
+(`MkvDemuxer`), remuxes it into fMP4, and serves that over a **local HTTP loopback server inside
+the app**. `startMediaSession` returns the already-connected `KvsMediaLiveViewSession`; its `url`
+field (`http://127.0.0.1:<port>/stream.mp4`) is what you hand to your player — never an
+AWS/CloudFront URL directly.
+
+**This is a live, per-attempt resource, not a reusable signed URL — the biggest behavioral change
+from the old HLS model.** `KvsMediaLiveViewSession` owns a real background `GetMedia` connection
+and a real local server for as long as it exists; there is no "the URL is still valid, just
+reconnect the player to it" recovery path anymore (see §5). On any disconnect/error, `stop()` the
+session and construct a **fresh** one via `startMediaSession` again — never retry against an old
+instance's `url`.
 
 The substream can legitimately still be spinning up for a few seconds after `StartCloudStreaming`
-reports `active` — retry `resolvePlaybackUri` a few times (e.g. 3 attempts, ~2s apart) before
+reports `active` — retry `startMediaSession` a few times (e.g. 3 attempts, ~2s apart) before
 treating a failure here as terminal, mirroring step 2's own retry posture.
 
-### Step 4 — HLS playback
+### Step 4 — play the local loopback URL
 
-Play the resolved URL with any standard HLS-capable player (this app uses `video_player`, backed
-by ExoPlayer/AVFoundation natively — no KVS SDK needed in the app at all, since the Lambda already
-resolves everything down to a plain HLS URL).
+Play `KvsMediaLiveViewSession.url` with any ordinary progressive-MP4-capable player — this app
+uses `video_player` (ExoPlayer/AVFoundation natively). From the player's point of view this is a
+completely ordinary local HTTP source; it has no idea AWS or MKV are involved at all. Leave the
+declared duration unbounded (`0`) — that's the correct "genuinely live content" signal for
+ExoPlayer, not a bug to fix (see `camera_api`'s `media/fmp4_muxer.dart`'s `totalDurationSeconds`
+doc for the real-hardware-tested reasoning, and `API_REFERENCE.md`'s `KvsMediaLiveViewSession`
+entry for a case study of what goes wrong if you give it a fake non-zero duration instead).
 
 ### Ending the session
 
@@ -297,39 +330,52 @@ player with `stream_status: active` and no picture is a real, distinct failure m
 
 ## 5. Reconnect and failure semantics — read this before writing your recovery logic
 
-Camera-visible trouble and phone-visible trouble are two different signals and need two different
-watchers — there is no single live push signal for WAN the way LAN's ICE connection state is one:
+**Rewritten 2026-09-18 — the "same URL, just reconnect" recovery model this section used to
+describe no longer applies at all.** Since the 2026-09-17 `GetMedia` migration (§3),
+`KvsMediaLiveViewSession` is an explicitly **non-reusable, one-per-attempt** resource — there is
+no long-lived URL to fall back to; every recovery path below ends the same way, constructing a
+fresh session via `startMediaSession` again.
+
+Camera-visible trouble and phone-visible trouble are still two different signals needing two
+different watchers — there is no single live push signal for WAN the way LAN's ICE connection
+state is one:
 
 1. **Camera-visible**: poll `GetCloudStreamingStatus` periodically while playing (this app uses a
    10s interval). A cheap LAN-reachability probe first, each tick, is worth doing before spending
    the paid AWS/Lambda call — if the phone has come back onto the camera's LAN, switch to the LAN
    path entirely rather than continuing to poll WAN. On `degraded`/`idle`/a failed status call,
-   re-resolve playback (§3 step 3) before falling back to a full restart from step 1.
-2. **Phone-visible**: watch your player's own error/stall signals (e.g. `hasError`, or a
-   position-progress poll to catch "playing but frozen," which `hasError` alone won't catch).
+   tear down and restart from Step 1.
+2. **Phone-visible**: watch your player's own error signal (`hasError`), **and** a real
+   data-arrival ground truth — `KvsMediaLiveViewSession.lastSampleAt`, a timestamp updated every
+   time a real MKV sample is actually demuxed off the wire, independent of whatever the player
+   itself reports.
 
-**The open question your recovery logic needs to answer, that this app's own implementation does
-not yet answer correctly: is a player-visible error/stall recoverable by reconnecting to the
-*same* already-resolved HLS URL, or does it require re-resolving a fresh one (§3 step 3 again)?**
+**Do not use `video_player`'s own position as a stall signal — real-hardware finding, 2026-09-18:
+for this genuinely live (unbounded-duration) stream, `VideoPlayerController.value.position` was
+observed staying pinned at a near-zero constant (`~0.001s`) for an entire multi-minute session
+*regardless of whether playback was actually healthy* — including sessions later confirmed, by
+direct visual inspection, to be playing correctly.** A naive "has the position advanced in the
+last N seconds" poll — the pattern this section previously recommended — produces exactly the same
+reading whether the stream is frozen or perfectly fine, so it can't tell them apart on its own.
+This app's `LiveViewScreen._pollWanStall` learned this the hard way twice: first it used a
+position-only check and repeatedly tore down/reconnected a perfectly healthy KVS session (visible
+as a freeze/reconnect cycle roughly every 20s, confirmed via `lastSampleAt` proving real data was
+still arriving the whole time); the fix is to check `lastSampleAt` **first** and only fall through
+to the position heuristic — treating it only as a *secondary, not-fully-trustworthy* signal — when
+`lastSampleAt` itself shows no recent sample, i.e. a genuinely dead connection. See
+`rtsp_live_view_session.dart`'s `lastPacketAt` (`BUG-030`) for the LAN-side twin of this same
+ground-truth pattern — `lastSampleAt` is its direct WAN counterpart, added specifically because the
+LAN fix was never extended to WAN until this incident.
 
-The "same URL is fine" assumption holds for a transient phone-side network/decoder hiccup — the
-underlying KVS session hasn't changed, so reconnecting to the identical long-lived URL (§3 step 3)
-recovers cleanly. It does **not** hold for a different, real scenario: **the camera can
-legitimately stop the KVS stream outright mid-session** — this happens, among other triggers,
-whenever a client toggles the camera's mic on/off while WAN streaming is active (see §6). This is
-expected, correct camera-side behavior, not corruption — but from the app's perspective it looks
-identical to a stall (playback freezes, or an HLS player may throw a hard platform-level
-exception), and (since `FR-CF-154`, 2026-09-14) the camera does **not** bring the stream back on
-its own — a fresh §3 sequence from Step 1 is required, not a same-URL reconnect. This app's
-current recovery path (`live_view_screen.dart`'s `_recoverWanPlayback`) does not yet distinguish
-a transient phone-side hiccup from a real camera-initiated stop — real-device testing (pre-dating
-`FR-CF-154`, back when the camera still self-reconnected) found this required the user to
-manually retry a few times before playback resumed. **This remains a known, unresolved gap** —
-not a solved pattern to copy as-is. Recommend building in an explicit fallback: if a same-URL
-reconnect fails its own retry budget, fall through to a fresh §3 sequence (re-check status,
-re-`startCloudStreaming`, re-resolve a new URL) rather than giving up or looping the same stale
-URL indefinitely — and prefer reacting to `CloudStreamStopped` (§6) over waiting to notice via a
-failed reconnect at all.
+**Reconnect is always "stop the old session (if any), start a fresh one" — never "retry the same
+`url`."** The camera can also legitimately stop the KVS stream outright mid-session — this
+happens, among other triggers, whenever a client toggles the camera's mic on/off while WAN
+streaming is active (see §6). This is expected, correct camera-side behavior, not corruption, and
+(since `FR-CF-154`, 2026-09-14) the camera does **not** bring the stream back on its own — a fresh
+§3 sequence from Step 1 is required either way, which conveniently means this case and an ordinary
+phone-side hiccup now need the *same* recovery code path (unlike the old HLS model, which drew a
+real distinction between them). Prefer reacting to `CloudStreamStopped` (§6) over waiting to notice
+via a failed poll/stall detection at all, where you can.
 
 ## 6. The audio-track/mic-toggle interaction, and camera-initiated stops in general
 
@@ -364,20 +410,31 @@ for exact method signatures:
 | LAN reachability probe | `LiveStreamUriClient.checkReachable` |
 | LAN cloud-streaming status/stop | `CloudStreamingLanClient` |
 | WAN command relay (low-level) | `IotCommandClient` |
-| WAN KVS playback URL resolution | `KvsPlaybackClient` |
-| WAN live-view session (quality-selective Start/Stop/Status/resolve, lease token, one interface) | `WanLiveViewClient` / `AwsWanLiveViewClient` |
+| WAN media-viewer AWS credential vending (Lambda `mode=media`) | `KvsMediaViewerCredentialsClient` |
+| WAN direct `GetMedia` fetch | `KvsGetMediaClient` |
+| WAN MKV demux (`GetMedia`'s raw wire format) | `MkvDemuxer` (`wan/kvs_media/mkv_demuxer.dart`) |
+| fMP4 remux (init segment + fragments) — shared with the LAN RTSP path | `RtspFmp4Muxer` (`media/fmp4_muxer.dart`) |
+| WAN live playback session (credentials + `GetMedia` + demux + remux + local HTTP loopback, one class) | `KvsMediaLiveViewSession` |
+| WAN live-view session (quality-selective Start/Stop/Status/`startMediaSession`, lease token, one interface) | `WanLiveViewClient` / `AwsWanLiveViewClient` |
 | WAN audio-recording toggle | `WanAudioVolumeClient` |
+
+**`KvsPlaybackClient`/`resolvePlaybackUri` — removed 2026-09-17**, along with the HLS session-URL
+flow it backed. If you see either name referenced anywhere (an old branch, a cached mental model,
+search results from before that date), it no longer exists in this codebase — `startMediaSession`/
+`KvsMediaLiveViewSession` replaced it outright, not alongside it.
 
 None of these implement the offer/answer negotiation, the reconnect state machine, or the
 transport-selection logic described above — that's the layer you build on top, same as this app's
 own `LiveViewController`/`LiveViewScreen` do (not shipped as reusable `camera_api` code — see the
 note at the top of this file for why).
 
-## 8. Known limitations (as of 2026-09-14)
+## 8. Known limitations (as of 2026-09-18)
 
-- **§5's reconnect gap** — same-URL-reconnect-only recovery doesn't distinguish a transient
-  phone-side hiccup from a real camera-initiated stop, which (since `FR-CF-154`) needs a fresh
-  Start, not a same-URL retry. Unresolved.
+- **Medium-quality WAN playback (H.264) is hardware-verified end-to-end** as of 2026-09-18 (§3's
+  `GetMedia`/`KvsMediaLiveViewSession` path, the `lastSampleAt` stall-detection fix in §5). **High
+  quality is not** — a persistent KVS `PutMedia` `FRAMES_MISSING_FOR_TRACK` (`errorId=4011`)
+  failure loop was found on the camera/KVS-producer side specifically for the high-quality stream,
+  unrelated to the medium-quality fixes above and not yet root-caused. Low quality is untested.
 - `FR-CF-154`'s server-side pieces (quality-selective start/stop, reference counting, 30s lease
   timeout, `CloudStreamStopped` event) are build-verified firmware-side only — **not yet
   hardware-verified** as of this writing.
@@ -385,7 +442,11 @@ note at the top of this file for why).
 - `stream_status: active` is not sufficient evidence of a healthy stream (§4) — no fix planned,
   this is inherent to what the status derivation observes; build your own diagnostics around it
   rather than expecting a firmware change.
-- No resolution/bitrate telemetry exists for the WAN path (HLS gives no equivalent of WebRTC's
-  `inbound-rtp` stats report) — if you need live quality metrics on WAN, you'll need to derive
-  them from player-level buffering/stall signals rather than a byte-count-based bitrate the way
-  LAN can.
+- No resolution/bitrate telemetry exists for the WAN path (`GetMedia` gives no equivalent of
+  WebRTC's `inbound-rtp` stats report) — if you need live quality metrics on WAN, you'll need to
+  derive them from player-level buffering/stall signals or `KvsMediaLiveViewSession`'s own sample
+  arrival cadence, rather than a byte-count-based bitrate the way LAN can.
+- WAN-vs-LAN latency is inherently higher (encode → AWS KVS ingestion → phone's `GetMedia` fetch →
+  demux/remux, vs. LAN's near-zero-hop direct connection) — roughly ~3s observed on real hardware
+  post-fix. Don't expect to close this gap to zero; a much larger, *growing* gap is a sign of the
+  player-drift class of bug §5 describes, not normal WAN overhead.

@@ -5,6 +5,11 @@ class _FakeTransport implements IotTransport {
   final List<Map<String, dynamic>> published = [];
   final List<Map<String, dynamic>> publishedAndWaited = [];
 
+  /// Every `timeout` this transport was actually handed, in call order — backs the
+  /// timeout-pass-through tests below (2026-09-15 fix: a caller-supplied timeout used to be
+  /// silently dropped by callers like `WanDeviceIdentityClient.getDeviceIdentity`).
+  final List<Duration> timeouts = [];
+
   /// Queue of responses `publishAndWait` returns, in call order — `null` means "no reply"
   /// (timeout). Defaults to a single `{"status": "ok"}` reply if left empty.
   final List<Map<String, dynamic>?> replies = [];
@@ -21,6 +26,7 @@ class _FakeTransport implements IotTransport {
     Duration timeout = const Duration(seconds: 12),
   }) async {
     publishedAndWaited.add(body);
+    timeouts.add(timeout);
     if (replies.isEmpty) return {'status': 'ok'};
     return replies.removeAt(0);
   }
@@ -205,4 +211,71 @@ void main() {
     final ids = transport.publishedAndWaited.map((b) => b['request_id']).toSet();
     expect(ids.length, 2);
   });
+
+  test('sendCommandWithResponse defaults to a 12s wait when given no timeout', () async {
+    final transport = _FakeTransport();
+    final client = IotCommandClient('VZL-CAM-000001', transport: transport);
+
+    await client.sendCommandWithResponse(IotCommandClient.getMirrorFlip);
+
+    expect(transport.timeouts.single, const Duration(seconds: 12));
+  });
+
+  test('sendCommandWithResponse passes timeoutSeconds through to the transport', () async {
+    final transport = _FakeTransport();
+    final client = IotCommandClient('VZL-CAM-000001', transport: transport);
+
+    await client.sendCommandWithResponse(IotCommandClient.getMirrorFlip, timeoutSeconds: 5);
+
+    expect(transport.timeouts.single, const Duration(seconds: 5));
+  });
+
+  test(
+    'sendCommandWithResponse(retryOnTimeout: false) makes a single attempt and throws on '
+    'a bare timeout, instead of retrying',
+    () async {
+      final transport = _FakeTransport()..replies.add(null);
+      final client = IotCommandClient('VZL-CAM-000001', transport: transport);
+
+      await expectLater(
+        client.sendCommandWithResponse(IotCommandClient.getMirrorFlip, retryOnTimeout: false),
+        throwsA(isA<Exception>()),
+      );
+      expect(transport.publishedAndWaited.length, 1);
+    },
+  );
+
+  test(
+    'sendCommandWithResponse still retries once by default (retryOnTimeout defaults true)',
+    () async {
+      final transport = _FakeTransport()
+        ..replies.add(null)
+        ..replies.add(null);
+      final client = IotCommandClient('VZL-CAM-000001', transport: transport);
+
+      await expectLater(
+        client.sendCommandWithResponse(IotCommandClient.getMirrorFlip),
+        throwsA(isA<Exception>()),
+      );
+      expect(transport.publishedAndWaited.length, 2);
+    },
+  );
+
+  test(
+    'WanDeviceIdentityClient.getDeviceIdentity honours its own timeout (regression: this used '
+    'to be silently dropped, so a 5s caller-requested timeout actually took up to ~24s)',
+    () async {
+      final transport = _FakeTransport()
+        ..replies.add({
+          'status': 'ok',
+          'output': {'name': 'Front Door', 'location': 'Porch', 'timezone': 'UTC'},
+        });
+      final iot = IotCommandClient('VZL-CAM-000001', transport: transport);
+      final client = WanDeviceIdentityClient('VZL-CAM-000001', iotCommandClient: iot);
+
+      await client.getDeviceIdentity(timeout: const Duration(seconds: 5));
+
+      expect(transport.timeouts.single, const Duration(seconds: 5));
+    },
+  );
 }

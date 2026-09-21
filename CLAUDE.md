@@ -10,7 +10,7 @@ A Flutter mobile app for viewing/managing CCTV camera feeds (VizenLink/NuraEye c
 
 Run from the repo root unless noted.
 
-- `flutter analyze && dart format --output=none --set-exit-if-changed .` — lint/format gate (same as the `flutter-lint` skill). Run before considering any Dart change done.
+- `flutter analyze && dart format --output=none --set-exit-if-changed lib test` — lint/format gate (same as the `flutter-lint` skill). Run before considering any Dart change done. **Scoped to `lib`/`test` deliberately** — `packages/camera_api` keeps the senior engineer's own formatting verbatim (an older formatter at ~100 columns, vs this SDK's tall style at 80), so that each incoming drop stays a clean diff against their copy. Running the gate over `.` would rewrite ~112 package files and silently undo that.
 - `flutter test` — run the app's widget/unit tests (`test/widget_test.dart`).
 - `flutter test test/widget_test.dart --plain-name "Dashboard is the initial route"` — run a single test by name.
 - `flutter run` — run the app on a connected device/simulator/desktop/web target (see `flutter-run` skill).

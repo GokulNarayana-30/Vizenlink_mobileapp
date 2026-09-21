@@ -3,7 +3,8 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart' show debugPrint;
 
-import 'fmp4_muxer.dart';
+import 'package:camera_api/camera_api.dart';
+
 import 'rtsp_live_view_session.dart';
 
 /// One live-view session: opens [RtspLiveViewSession] against the camera's live-view RTSPS

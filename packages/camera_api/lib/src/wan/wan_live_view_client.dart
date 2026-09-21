@@ -1,4 +1,5 @@
 import '../camera_result.dart';
+import 'kvs_media/kvs_media_live_view_session.dart';
 
 enum StreamStatus { active, idle, degraded, notCompiled }
 
@@ -43,7 +44,21 @@ abstract interface class WanLiveViewClient {
   /// does, tear the stream down.
   Future<CameraResult<StreamStatus>> getCloudStreamingStatus(int token);
 
-  /// Resolves a playable media URI/session for the KVS-backed stream once [startCloudStreaming] +
-  /// [getCloudStreamingStatus] report `active`.
-  Future<CameraResult<Uri>> resolvePlaybackUri(StreamQuality quality);
+  /// Starts a [KvsMediaLiveViewSession] for the KVS-backed stream once [startCloudStreaming] +
+  /// [getCloudStreamingStatus] report `active` — the caller reads [KvsMediaLiveViewSession.url]
+  /// (a local loopback URL) to hand to `VideoPlayerController.networkUrl()`, and **must call
+  /// [KvsMediaLiveViewSession.stop]** when tearing this playback attempt down (on transport
+  /// switch, reconnect, or screen dispose) — unlike the old HLS-based `resolvePlaybackUri` this
+  /// replaced (2026-09-17), the returned value is a live resource with its own background
+  /// GetMedia connection and local HTTP server, not a static signed URL.
+  ///
+  /// **Replaces `resolvePlaybackUri`/`GetHLSStreamingSessionURL` entirely**, for both H.264 and
+  /// H.265 — not just because AWS rejects an H.265 stream at that API outright
+  /// (`UnsupportedStreamMediaTypeException`; `GetDASHStreamingSessionURL` has the identical
+  /// restriction despite more permissive-sounding prose), but because unifying both codecs onto
+  /// one WAN playback path (one health-check/reconnect/error-handling implementation) is simpler
+  /// than maintaining two. See `KvsMediaLiveViewSession`'s own doc and
+  /// `kb/raw/2026-09-17-code-kvs-media-viewer-credential-vending.md` for the full reasoning and
+  /// live end-to-end verification this is based on.
+  Future<CameraResult<KvsMediaLiveViewSession>> startMediaSession(StreamQuality quality);
 }

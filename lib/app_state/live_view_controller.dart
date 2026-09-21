@@ -469,13 +469,17 @@ class LiveViewController extends ChangeNotifier {
   /// while a WAN session is playing.
   static const _wanHealthCheckInterval = Duration(seconds: 10);
 
-  /// The URI [wanVideoController] is currently (or was last) playing —
-  /// distinct from the health monitor's `GetCloudStreamingStatus` check,
-  /// this backs [_pollWanStall]'s local-first recovery: a purely phone-side
-  /// HLS hiccup (decoder stall, a blip to the CloudFront/S3 endpoint) with a
-  /// perfectly healthy camera-side stream doesn't need a fresh AWS resolve,
-  /// just a local re-init against the same still-valid URL.
-  Uri? _lastWanPlaybackUri;
+  /// The live `GetMedia` session backing [wanVideoController] — a real
+  /// resource (background AWS connection + local loopback HTTP server), not
+  /// the long-lived static HLS URL this replaced on 2026-09-17. It must be
+  /// stopped on every teardown, transport switch, and re-resolve, or its
+  /// socket and server outlive the playback attempt that created it.
+  ///
+  /// Its [KvsMediaLiveViewSession.url] still backs [_pollWanStall]'s
+  /// local-first recovery: while the session is alive its loopback server is
+  /// already serving, so a purely phone-side decoder stall can re-init the
+  /// player against the same URL without a fresh AWS round trip.
+  KvsMediaLiveViewSession? _wanMediaSession;
   Timer? _wanStallTimer;
   Duration? _lastWanPosition;
   int _wanStallPollCount = 0;
@@ -1363,23 +1367,15 @@ class LiveViewController extends ChangeNotifier {
       return failWan('Camera is not streaming to the cloud right now');
     }
 
-    // Step 3 — resolve a playable URL, retrying a few times since the
+    // Step 3 — open a GetMedia session, retrying a few times since the
     // substream can still be spinning up for a few seconds after `active`.
-    Uri? playbackUri;
-    for (var attempt = 0; attempt < 3 && !_disposed; attempt++) {
-      final uriResult = await client.resolvePlaybackUri(_wanQuality);
-      if (uriResult case CameraSuccess(:final value)) {
-        playbackUri = value;
-        break;
-      }
-      if (attempt < 2) await Future.delayed(const Duration(seconds: 2));
-    }
+    final playbackUri = await _openWanMediaSession(client);
     if (_disposed) return abortWanForDispose();
     if (playbackUri == null) {
       return failWan('Could not start remote playback');
     }
 
-    // Step 4 — play the resolved HLS URL.
+    // Step 4 — play the session's local loopback URL.
     if (!await _playWanUrl(playbackUri)) {
       return failWan('Could not play the remote stream');
     }
@@ -1411,6 +1407,42 @@ class LiveViewController extends ChangeNotifier {
     });
   }
 
+  /// Stops any open session, opens a fresh `GetMedia` one, and returns its
+  /// loopback URL — `null` if every attempt failed.
+  ///
+  /// Retries because the camera's substream can still be spinning up for a
+  /// few seconds after `GetCloudStreamingStatus` first reports `active`. The
+  /// session is stored in [_wanMediaSession] the moment it exists, so a
+  /// dispose racing this still tears it down via [_stopWanIfNeeded].
+  Future<Uri?> _openWanMediaSession(AwsWanLiveViewClient client) async {
+    await _stopWanMediaSession();
+    for (var attempt = 0; attempt < 3 && !_disposed; attempt++) {
+      final result = await client.startMediaSession(_wanQuality);
+      if (result case CameraSuccess(:final value)) {
+        value.onLog = (message) => debugPrint('[LiveView] $message');
+        _wanMediaSession = value;
+        final url = value.url;
+        if (url != null) return url;
+        await _stopWanMediaSession();
+      }
+      if (attempt < 2) await Future.delayed(const Duration(seconds: 2));
+    }
+    return null;
+  }
+
+  /// Tears down [_wanMediaSession] — its background `GetMedia` connection and
+  /// local loopback server — if one is open. Safe to call when none is.
+  Future<void> _stopWanMediaSession() async {
+    final session = _wanMediaSession;
+    _wanMediaSession = null;
+    if (session == null) return;
+    try {
+      await session.stop();
+    } catch (_) {
+      // Best-effort — a collapsed session has nothing left to free.
+    }
+  }
+
   /// Initializes and starts playback of [uri] on [wanVideoController],
   /// disposing whatever controller was there before. Returns whether
   /// playback actually started.
@@ -1430,7 +1462,6 @@ class LiveViewController extends ChangeNotifier {
     await videoController.play();
     final oldController = wanVideoController;
     wanVideoController = videoController;
-    _lastWanPlaybackUri = uri;
     if (oldController != null) unawaited(oldController.dispose());
     return true;
   }
@@ -1519,14 +1550,17 @@ class LiveViewController extends ChangeNotifier {
     await _recoverWanStallLocalFirst();
   }
 
-  /// Re-inits playback against the same, already-valid HLS URI first — no
-  /// extra AWS round trip needed for a purely local hiccup — only
-  /// escalating to a fresh WAN resolve ([_recoverWanPlayback]) if that
-  /// itself fails.
+  /// Re-inits playback against the open session's own loopback URL first — no
+  /// AWS round trip needed for a purely phone-side hiccup, since that
+  /// session's local server is still serving — only escalating to a fresh
+  /// session ([_recoverWanPlayback]) if that fails, or if the session has
+  /// already ended (its `GetMedia` stream closed), where replaying the same
+  /// URL can only fail.
   Future<void> _recoverWanStallLocalFirst() async {
     if (_disposed || transport != LiveViewTransport.wan) return;
-    final uri = _lastWanPlaybackUri;
-    if (uri != null) {
+    final session = _wanMediaSession;
+    final uri = session?.url;
+    if (session != null && uri != null && !session.isSessionEnded) {
       for (var attempt = 0; attempt < 3 && !_disposed; attempt++) {
         if (transport != LiveViewTransport.wan) return;
         if (await _playWanUrl(uri)) {
@@ -1592,8 +1626,9 @@ class LiveViewController extends ChangeNotifier {
         // self-restarts its KVS producer on a mic-toggle/resolution-change
         // trigger (§6) — it just stops the stream outright, and won't bring
         // it back without a fresh `startCloudStreaming` (Step 1). Calling
-        // `_recoverWanPlayback` here (a same-URL `resolvePlaybackUri` retry,
-        // no new Start) would now reliably fail its own 3-attempt budget
+        // `_recoverWanPlayback` here (a fresh `GetMedia` session against a
+        // producer that has stopped, no new Start) would now reliably fail
+        // its own 3-attempt budget
         // every single time before falling through to `_reconnect` anyway
         // — wasting ~6s. Go straight to a full reconnect instead, per
         // STREAMING_GUIDE.md §5's explicit recommendation. (`_recoverWanPlayback`
@@ -1609,27 +1644,20 @@ class LiveViewController extends ChangeNotifier {
     }
   }
 
-  /// Re-resolves and switches to a fresh playback URL without a full
-  /// Start/Stop cycle — the guide's "same URL is fine" assumption doesn't
-  /// hold across a camera-initiated producer restart, but a *fresh*
-  /// `resolvePlaybackUri` does. Falls through to a full [_reconnect] (a
-  /// fresh §3 sequence from Step 1) if even that fails, per §5's explicit
-  /// recommendation rather than looping a stale URL indefinitely.
+  /// Opens a *fresh* `GetMedia` session and switches to it without a full
+  /// Start/Stop cycle — a stalled or ended session can't be recovered by
+  /// replaying its own loopback URL, but a new session against the same
+  /// still-running camera-side stream can. Falls through to a full
+  /// [_reconnect] (a fresh §3 sequence from Step 1) if even that fails, per
+  /// §5's explicit recommendation rather than looping a dead session.
   Future<void> _recoverWanPlayback() async {
     if (_disposed || transport != LiveViewTransport.wan) return;
     final thingName = connection.thingName;
     if (thingName == null) return;
-    final client = AwsWanLiveViewClient(thingName);
 
-    Uri? playbackUri;
-    for (var attempt = 0; attempt < 3 && !_disposed; attempt++) {
-      final result = await client.resolvePlaybackUri(_wanQuality);
-      if (result case CameraSuccess(:final value)) {
-        playbackUri = value;
-        break;
-      }
-      if (attempt < 2) await Future.delayed(const Duration(seconds: 2));
-    }
+    final playbackUri = await _openWanMediaSession(
+      AwsWanLiveViewClient(thingName),
+    );
     if (_disposed || transport != LiveViewTransport.wan) return;
 
     if (playbackUri == null || !await _playWanUrl(playbackUri)) {
@@ -1666,7 +1694,6 @@ class LiveViewController extends ChangeNotifier {
     unawaited(_cloudStreamStoppedSub?.cancel());
     _cloudStreamStoppedSub = null;
     _stopWanStallMonitor();
-    _lastWanPlaybackUri = null;
     final controller = wanVideoController;
     wanVideoController = null;
     if (controller != null) {
@@ -1677,6 +1704,10 @@ class LiveViewController extends ChangeNotifier {
       }
       unawaited(controller.dispose());
     }
+    // After the player, not before — the session owns the loopback server the
+    // player is reading from, so closing it first only makes the player throw
+    // on the way down.
+    await _stopWanMediaSession();
 
     if (preferLan) {
       final nuraeye = NuraeyeClient(connection);

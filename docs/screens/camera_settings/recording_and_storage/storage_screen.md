@@ -29,3 +29,11 @@
 ## Data model
 
 No `Camera`-model storage fields are read or written by this screen any more (`sdStorageEnabled`, `retentionDays`, `sdCardCapacityGb`/`sdCardUsedGb`/`sdCardHealthPercent`/`sdCardEnduranceRated`, `storageFailure` — all retired from this screen's own use, though the `Camera` model itself may still carry them for other screens/seed data). Everything shown is either `LocalStorageStatus` (`enabled`, `cardPresent`, `capacityBytes`, `freeBytes` — `packages/camera_api`) or the same `RecordingClip`/clip-duration types [recording_screen.md](recording_screen.md) and [camera_live_screen.md](../../camera_live/camera_live_screen.md) already use.
+
+## Recordings tab works over WAN (2026-09-21)
+
+The Recordings tab's clip list now falls back to `WanRecordingsClient.getRecordings()` when the
+LAN `RecordingsClient` call fails — the same LAN-first/WAN-on-failure shape this screen's storage
+status and enable/disable paths already used. Before this it was LAN-only, so the tab sat empty
+off-network even while the Playback tab on [camera_live_screen.md](../../camera_live/camera_live_screen.md)
+listed the very same clips over WAN. No element or design ID changed.

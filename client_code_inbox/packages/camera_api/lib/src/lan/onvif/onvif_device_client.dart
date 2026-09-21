@@ -28,7 +28,7 @@ const kMaxDevicePasswordLength = 15;
 /// sets both fields to the identical string for every entry, confirmed by reading the firmware
 /// source directly, same convention `kvs_livestream_test.py`'s `load_firmware_credentials()`
 /// already assumes — used at camera onboarding time (`AddCameraCredentialsScreen`) to populate
-/// `CameraConnection.thingName` so WAN live view (`IotCommandClient`/`KvsPlaybackClient`) has
+/// `CameraConnection.thingName` so WAN live view (`IotCommandClient`/`KvsMediaViewerCredentialsClient`) has
 /// something to address the camera with), `GetServices` (endpoint discovery), and the device
 /// identity trio (`GetScopes`/`SetScopes` for camera name + location, `GetSystemDateAndTime`/
 /// `SetSystemDateAndTime` for time zone — added 2026-08-04, `DeviceIdentityScreen`). Wire format

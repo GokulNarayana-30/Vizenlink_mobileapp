@@ -215,6 +215,17 @@ class IotCommandClient {
   static const setBboxOverlayEnabled = 73;
   static const getBboxOverlayEnabled = 74;
 
+  /// `FR-CF-152`: WAN recorded-clip playback over a dedicated KVS stream (`<thingName>-playback`)
+  /// — see `WanClipPlaybackClient`. `getRecordings`/`getRecordingDates` (80/81) are the MQTT
+  /// counterparts of LAN `GET /nuraeye/recordings`(`/dates`) — see `WanRecordingsClient`.
+  static const startClipPlayback = 75;
+  static const seekClipPlayback = 76;
+  static const pauseClipPlayback = 77;
+  static const resumeClipPlayback = 78;
+  static const stopClipPlayback = 79;
+  static const getRecordings = 80;
+  static const getRecordingDates = 81;
+
   /// `StopCloudStreaming` stays fire-and-forget (older command shape, predates `FR-NE-053`'s
   /// request/response pattern) — [token] is optional: omitting it falls back to the camera's
   /// legacy blunt "stop every quality" behavior (`bsp_camera_setCloudStreaming(false)`).
@@ -229,7 +240,9 @@ class IotCommandClient {
   Future<Map<String, dynamic>?> sendStartCloudStreaming(String quality) =>
       sendCommandWithResponse(startCloudStreaming, params: {'quality': quality});
 
-  /// [isRetry] is internal — set by the one-shot retry below, never pass it explicitly.
+  /// [isRetry] is set by the one-shot retry below, or (2026-09-15) by
+  /// [sendCommandWithResponse]'s own `retryOnTimeout: false` opt-out — the only two callers
+  /// allowed to pass it explicitly; every other caller should leave it at the default.
   ///
   /// **One-shot retry on no reply within [timeout], added 2026-08-08 (originally for the Lambda
   /// relay's HTTP 504, carried forward 2026-08-18 for the direct-MQTT transport's equivalent
@@ -275,10 +288,18 @@ class IotCommandClient {
   /// [timeoutSeconds], if given, overrides the default ~12s wait for the camera's reply — for a
   /// command known to legitimately take longer (e.g. [getPreviewSnapshot]'s on-device capture +
   /// RSA-2048 encrypt), not a general escape hatch.
+  ///
+  /// [retryOnTimeout] (default `true`) opts out of the one-shot retry documented on
+  /// [_publishAndWait]. Only pass `false` from a caller that already polls on its own schedule —
+  /// e.g. a reachability ping, where the retry doubles worst-case latency to buy a second chance
+  /// the next tick provides anyway. Every user-initiated Get/Set should keep the retry: for
+  /// those, a missing reply is a one-shot failure the user would otherwise have to notice and
+  /// redo manually.
   Future<Map<String, dynamic>?> sendCommandWithResponse(
     int command, {
     Map<String, dynamic>? params,
     double? timeoutSeconds,
+    bool retryOnTimeout = true,
   }) async {
     final reply = await _publishAndWait(
       command,
@@ -286,6 +307,9 @@ class IotCommandClient {
       timeout: timeoutSeconds != null
           ? Duration(milliseconds: (timeoutSeconds * 1000).round())
           : const Duration(seconds: 12),
+      // `isRetry: true` on the first attempt makes the no-reply path in _publishAndWait throw
+      // immediately instead of scheduling the retry — same branch, no duplicate logic.
+      isRetry: !retryOnTimeout,
     );
     if (reply == null) return null; // genuine timeout — no reply arrived at all
     // [AI Fix] Get/Set response asymmetry (see `.claude/rules/cloud-components.md` — the exact

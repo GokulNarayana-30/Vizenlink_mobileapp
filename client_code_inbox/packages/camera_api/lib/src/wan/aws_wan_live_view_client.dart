@@ -1,38 +1,37 @@
 import '../camera_result.dart';
 import 'iot_command_client.dart';
-import 'kvs_playback_client.dart';
+import 'kvs_media/kvs_media_live_view_session.dart';
 import 'wan_live_view_client.dart';
 
 /// Concrete [WanLiveViewClient] — `mobile-app-android-3-video-image-pipeline/DESIGN.md` §7.
 ///
 /// **Moved into `camera_api` 2026-08-11** — previously lived in the app layer specifically
-/// because it depended (transitively, via `IotCommandClient`/`KvsPlaybackClient`) on
+/// because it depended (transitively, via `IotCommandClient`/the old `KvsPlaybackClient`) on
 /// `AuthController`; both of those now source the Cognito ID token from `WanAuth.idTokenProvider`
 /// instead (set once at app startup), so nothing here reaches into app code anymore. Still
 /// distinct from `WebRtcLiveViewSession`, which stays in the app layer for an unrelated reason —
 /// it needs `flutter_webrtc`'s native `RTCPeerConnection`, a real Flutter-plugin dependency this
 /// package can never take on.
 ///
-/// **Not yet hardware/cloud-verified** — see `IotCommandClient`/`KvsPlaybackClient`'s own docs.
+/// **2026-09-17**: `resolvePlaybackUri`/`KvsPlaybackClient` (HLS-based) replaced entirely by
+/// [startMediaSession]/[KvsMediaLiveViewSession] (direct `GetMedia`) — see
+/// [WanLiveViewClient.startMediaSession]'s own doc for why.
 class AwsWanLiveViewClient implements WanLiveViewClient {
-  /// [iotCommandClient]/[kvsPlaybackClient] are overridable for tests — default to real
-  /// instances, matching every other `Wan*Client` in this package (e.g.
-  /// `WanNightVisionClient`). **Added 2026-08-14** — this class previously had no way to inject
-  /// a fake `IotCommandClient` at all, so nothing could unit-test it directly; every existing
-  /// test exercised it only through `_FakeWanClient`-style hand-written fakes of the
-  /// `WanLiveViewClient` *interface*, which never actually ran this class's own logic (including
-  /// the missing-`try`/`catch` bug on `getCloudStreamingStatus` this fixed).
+  /// [iotCommandClient] is overridable for tests — default to a real instance, matching every
+  /// other `Wan*Client` in this package (e.g. `WanNightVisionClient`). **Added 2026-08-14** —
+  /// this class previously had no way to inject a fake `IotCommandClient` at all, so nothing
+  /// could unit-test it directly; every existing test exercised it only through
+  /// `_FakeWanClient`-style hand-written fakes of the `WanLiveViewClient` *interface*, which
+  /// never actually ran this class's own logic (including the missing-`try`/`catch` bug on
+  /// `getCloudStreamingStatus` this fixed).
   AwsWanLiveViewClient(
     String thingName, {
     IotCommandClient? iotCommandClient,
-    KvsPlaybackClient? kvsPlaybackClient,
   }) : _iot = iotCommandClient ?? IotCommandClient(thingName),
-       _kvs = kvsPlaybackClient ?? KvsPlaybackClient(),
        _thingName = thingName;
 
   final String _thingName;
   final IotCommandClient _iot;
-  final KvsPlaybackClient _kvs;
 
   @override
   Future<CameraResult<int>> startCloudStreaming(StreamQuality quality) async {
@@ -107,11 +106,13 @@ class AwsWanLiveViewClient implements WanLiveViewClient {
   }
 
   @override
-  Future<CameraResult<Uri>> resolvePlaybackUri(StreamQuality quality) async {
+  Future<CameraResult<KvsMediaLiveViewSession>> startMediaSession(StreamQuality quality) async {
+    final session = KvsMediaLiveViewSession(streamName: '$_thingName-${quality.wireValue}');
     try {
-      final url = await _kvs.getPlaybackUrl('$_thingName-${quality.wireValue}');
-      return CameraSuccess(Uri.parse(url));
+      await session.start();
+      return CameraSuccess(session);
     } catch (e) {
+      await session.stop();
       return CameraFailure(e.toString());
     }
   }

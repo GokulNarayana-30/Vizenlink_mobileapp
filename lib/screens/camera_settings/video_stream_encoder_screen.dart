@@ -37,22 +37,8 @@ String _encoderProfileToWire(CameraEncoderProfile profile) => switch (profile) {
   CameraEncoderProfile.high => 'High',
 };
 
-/// This app's fixed `CameraResolution` enum has no direct ONVIF equivalent —
-/// the real wire shape is a `(width, height)` pixel pair, from whichever
-/// entries the camera's own Options response reports (usually exactly one).
-/// Derives the closest enum value from reported pixels for display; `_save`
-/// does the reverse when pushing a change.
-CameraResolution _resolutionFromPixels(int width, int height) {
-  if (width >= 1920 && height >= 1080) return CameraResolution.p1080;
-  if (width >= 1280 && height >= 720) return CameraResolution.p720;
-  return CameraResolution.p480;
-}
-
-String _resolutionLabel(CameraResolution resolution) => switch (resolution) {
-  CameraResolution.p1080 => '1080p',
-  CameraResolution.p720 => '720p',
-  CameraResolution.p480 => '480p',
-};
+String _resolutionLabel(Resolution resolution) =>
+    '${resolution.width}×${resolution.height}';
 
 String _streamTitle(VideoStream stream) => switch (stream) {
   VideoStream.highRes => 'High-res Stream',
@@ -131,8 +117,6 @@ class _VideoStreamEncoderScreenState extends State<VideoStreamEncoderScreen> {
 
   /// Native pixel size backing [_config.resolution] — loaded from the camera,
   /// needed on Save since the wire format is `(width, height)`, not an enum.
-  int _width = 1920;
-  int _height = 1080;
 
   VideoEncoderSettingsOptions? _encoderOptions;
 
@@ -206,10 +190,8 @@ class _VideoStreamEncoderScreenState extends State<VideoStreamEncoderScreen> {
               ? CameraBitrateMode.cbr
               : CameraBitrateMode.vbr,
           bitrateKbps: value.bitrate.toDouble(),
-          resolution: _resolutionFromPixels(value.width, value.height),
+          resolution: (width: value.width, height: value.height),
         );
-        _width = value.width;
-        _height = value.height;
       }
       if (optionsResult case CameraSuccess(:final value)) {
         _encoderOptions = value;
@@ -257,19 +239,10 @@ class _VideoStreamEncoderScreenState extends State<VideoStreamEncoderScreen> {
     if (connection != null) {
       final configToken = _configTokenFor(widget.stream);
       final client = OnvifVideoEncoderClient(connection);
-      var width = _width;
-      var height = _height;
-      final resolutions = _currentEncodingOptions?.resolutions;
-      if (resolutions != null && resolutions.isNotEmpty) {
-        for (final candidate in resolutions) {
-          if (_resolutionFromPixels(candidate.width, candidate.height) ==
-              _config.resolution) {
-            width = candidate.width;
-            height = candidate.height;
-            break;
-          }
-        }
-      }
+      // The picked value is already the camera's own pixel pair — no
+      // reverse lookup from a bucketed enum needed any more.
+      final width = _config.resolution.width;
+      final height = _config.resolution.height;
       final settings = VideoEncoderSettings(
         token: configToken,
         bitrate: _config.bitrateKbps.round(),
@@ -386,14 +359,20 @@ class _VideoStreamEncoderScreenState extends State<VideoStreamEncoderScreen> {
                         style: Theme.of(context).textTheme.bodyLarge,
                       );
                     }
-                    final available = _optionsOrFallback(
-                      resolutions?.map(
-                        (r) => _resolutionFromPixels(r.width, r.height),
-                      ),
-                      _config.resolution,
-                      CameraResolution.values,
-                    );
-                    return DropdownButtonFormField<CameraResolution>(
+                    // Unlike the enum-backed fields, resolution has no fixed
+                    // universe to filter — whatever the camera reports *is*
+                    // the list. The current value is always included so the
+                    // dropdown's `initialValue` is never outside its items.
+                    final available =
+                        <Resolution>{
+                          ...?resolutions,
+                          _config.resolution,
+                        }.toList()..sort(
+                          (a, b) => (b.width * b.height).compareTo(
+                            a.width * a.height,
+                          ),
+                        );
+                    return DropdownButtonFormField<Resolution>(
                       key: const Key('SENC-005'),
                       initialValue: _config.resolution,
                       isExpanded: true,

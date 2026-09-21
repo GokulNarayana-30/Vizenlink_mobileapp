@@ -2180,6 +2180,12 @@ class _CameraLiveScreenState extends State<CameraLiveScreen>
                       _PlaybackTab(
                         key: _playbackTabKey,
                         connection: camera.connection,
+                        thingName: camera.connection?.thingName,
+                        isWan: switch (_liveViewController?.transport) {
+                          LiveViewTransport.wan => true,
+                          null => null,
+                          _ => false,
+                        },
                         isActive: _tabController.index == 1,
                         onSnapshot: _takeSnapshot,
                         onClipStateChanged: _onPlaybackClipStateChanged,
@@ -3281,6 +3287,8 @@ class _PlaybackTab extends StatefulWidget {
   const _PlaybackTab({
     super.key,
     required this.connection,
+    required this.thingName,
+    required this.isWan,
     required this.isActive,
     required this.onSnapshot,
     required this.onClipStateChanged,
@@ -3290,6 +3298,16 @@ class _PlaybackTab extends StatefulWidget {
   /// check for real recordings at all in that case, so every day reports
   /// [_PlaybackAvailability.noRecording] with no network call attempted.
   final CameraConnection? connection;
+
+  /// The camera's AWS IoT thing name, or null if it was never onboarded to
+  /// the cloud — without one there is no WAN path for this tab at all.
+  final String? thingName;
+
+  /// Whether live view actually connected over WAN, threaded down from
+  /// `LiveViewController.transport` rather than guessed from IP addresses
+  /// (see `.claude/rules/mobile-app-screen-conventions.md` § LAN/WAN
+  /// transport selection). Null while the transport is still unknown.
+  final bool? isWan;
 
   /// Whether the Playback tab is the currently selected tab.
   final bool isActive;
@@ -3316,6 +3334,74 @@ class _PlaybackTab extends StatefulWidget {
   State<_PlaybackTab> createState() => _PlaybackTabState();
 }
 
+/// One open recorded-clip playback session, abstracted over transport so
+/// [_PlaybackTabState._openClip]'s hard-won sequencing (request-id guarding,
+/// assign-before-await, teardown ordering) keeps exactly one implementation.
+/// LAN streams the clip over RTSP through a local remux proxy; WAN has the
+/// camera push it into its own KVS playback stream, read back over the same
+/// kind of local loopback server.
+abstract class _ClipSession {
+  /// Local loopback URL to hand to a `VideoPlayerController`.
+  Uri get url;
+
+  /// True once this session's own content is exhausted — drives auto-advance
+  /// to the next clip.
+  bool get isSessionEnded;
+
+  /// Server-authoritative cursor, for a transport that has one. Used only
+  /// before the player reports a position of its own.
+  int? get lastKnownPositionEpochSeconds;
+
+  Future<void> stop();
+}
+
+class _LanClipSession implements _ClipSession {
+  _LanClipSession(this._proxy);
+
+  final RtspRemuxProxy _proxy;
+
+  @override
+  Uri get url => _proxy.url!;
+
+  @override
+  bool get isSessionEnded => _proxy.isSessionEnded;
+
+  @override
+  int? get lastKnownPositionEpochSeconds =>
+      _proxy.lastKnownPositionEpochSeconds;
+
+  @override
+  Future<void> stop() => _proxy.stop();
+}
+
+/// WAN: `StartClipPlayback` tells the camera to push the clip into its
+/// `<thing>-playback` KVS stream, which [KvsMediaLiveViewSession] reads back.
+/// Both halves stop together — the camera allows one playback session
+/// camera-wide, so a leaked Start would block the next clip.
+class _WanClipSession implements _ClipSession {
+  _WanClipSession(this._control, this._media);
+
+  final WanClipPlaybackClient _control;
+  final KvsMediaLiveViewSession _media;
+
+  @override
+  Uri get url => _media.url!;
+
+  @override
+  bool get isSessionEnded => _media.isSessionEnded;
+
+  /// No WAN equivalent — the camera reports no playback cursor of its own
+  /// over MQTT, so the cursor follows the player's position instead.
+  @override
+  int? get lastKnownPositionEpochSeconds => null;
+
+  @override
+  Future<void> stop() async {
+    await _media.stop();
+    await _control.stop();
+  }
+}
+
 class _PlaybackTabState extends State<_PlaybackTab> {
   /// Only dates that actually have footage — populated by
   /// [_loadDatesWithRecordings], never a fixed "last 7 days" — a date with
@@ -3329,17 +3415,25 @@ class _PlaybackTabState extends State<_PlaybackTab> {
   NuraeyeClient? _nuraeye;
   RecordingsClient? _recordings;
   OnvifReplayControlClient? _replayControl;
+  WanRecordingsClient? _wanRecordings;
+  WanClipPlaybackClient? _wanClipPlayback;
+
+  /// True only once live view has actually confirmed WAN — an unknown
+  /// transport stays on the LAN path rather than guessing, per the
+  /// screen-conventions rule.
+  bool get _useWan => widget.isWan == true && _wanRecordings != null;
 
   bool _isLoadingClips = true;
   List<RecordingClip> _clipsForDay = [];
 
   /// The real clip currently open for playback, if any — streamed live via
-  /// [_proxy] (this camera's RTSPS playback listener, remuxed to fMP4 over a
+  /// [_clipSession] (on LAN this camera's RTSPS playback listener, remuxed to
+  /// fMP4 over a
   /// local HTTP loopback) rather than downloaded first. See this file's
   /// `_PlaybackTab` doc comment for why.
   RecordingClip? _currentClip;
   VideoPlayerController? _clipController;
-  RtspRemuxProxy? _proxy;
+  _ClipSession? _clipSession;
 
   /// This session's own start point, in UTC epoch seconds — either the
   /// current clip's own start, or the seek target if this session opened
@@ -3348,12 +3442,12 @@ class _PlaybackTabState extends State<_PlaybackTab> {
   /// absolute epoch for [_cursorEpochSeconds].
   int? _sessionStartEpoch;
 
-  /// Polls [_proxy]'s server-side-authoritative position once a second
+  /// Polls [_clipSession]'s server-side-authoritative position once a second
   /// while a session is active, so the cursor/needle track real playback
   /// progress instead of sitting still until the next manual scrub — same
   /// reasoning as the sibling `nuraeye-rt` app's own position timer
   /// (`recording_timeline_screen.dart`). Also watches
-  /// [RtspRemuxProxy.isSessionEnded] to auto-advance to the next clip once
+  /// [_ClipSession.isSessionEnded] to auto-advance to the next clip once
   /// this one's real content is exhausted (event-triggered recording
   /// routinely has real gaps between clips — the camera's own multi-clip
   /// continuation only bridges genuinely back-to-back files within one
@@ -3379,7 +3473,37 @@ class _PlaybackTabState extends State<_PlaybackTab> {
       _recordings = RecordingsClient(nuraeye);
       _replayControl = OnvifReplayControlClient(connection);
     }
+    final thingName = widget.thingName;
+    if (thingName != null) {
+      _wanRecordings = WanRecordingsClient(thingName);
+      _wanClipPlayback = WanClipPlaybackClient(thingName);
+    }
     _loadDatesWithRecordings();
+  }
+
+  /// Lists clips in `[start, end]` over whichever transport live view
+  /// confirmed. `WanRecordingsClient` returns the clip list directly; the LAN
+  /// client wraps it alongside storage flags, which only that path logs.
+  Future<CameraResult<List<RecordingClip>>> _getRecordings({
+    required int start,
+    required int end,
+    required String context,
+  }) async {
+    if (_useWan) {
+      return _wanRecordings!.getRecordings(start: start, end: end);
+    }
+    final result = await _recordings!.getRecordings(start: start, end: end);
+    return switch (result) {
+      CameraSuccess(:final value) => () {
+        _logPlayback(
+          '$context: storageAvailable=${value.storageAvailable} '
+          'cardPresent=${value.cardPresent} truncated=${value.truncated}',
+        );
+        return CameraSuccess(value.clips);
+      }(),
+      CameraFailure(:final reason) => CameraFailure(reason),
+      CameraTimeout() => const CameraTimeout(),
+    };
   }
 
   /// Scans the last 90 days via `GetRecordings` and buckets clip start times
@@ -3411,15 +3535,16 @@ class _PlaybackTabState extends State<_PlaybackTab> {
     final start = now.subtract(const Duration(days: 90));
     final startEpoch = start.millisecondsSinceEpoch ~/ 1000;
     final endEpoch = now.millisecondsSinceEpoch ~/ 1000;
-    final result = await recordings.getRecordings(
+    final result = await _getRecordings(
       start: startEpoch,
       end: endEpoch,
+      context: '_loadDatesWithRecordings',
     );
     if (!mounted) return;
     switch (result) {
       case CameraSuccess(:final value):
         final dates = <DateTime>{};
-        for (final clip in value.clips) {
+        for (final clip in value) {
           final local = DateTime.fromMillisecondsSinceEpoch(
             clip.start * 1000,
           ).toLocal();
@@ -3428,9 +3553,8 @@ class _PlaybackTabState extends State<_PlaybackTab> {
         final sorted = dates.toList()..sort((a, b) => b.compareTo(a));
         _logPlayback(
           '_loadDatesWithRecordings($startEpoch..$endEpoch): '
-          '${value.clips.length} clip(s) across ${sorted.length} day(s), '
-          'storageAvailable=${value.storageAvailable} '
-          'cardPresent=${value.cardPresent} truncated=${value.truncated}',
+          '${value.length} clip(s) across ${sorted.length} day(s) '
+          'over ${_useWan ? 'WAN' : 'LAN'}',
         );
         setState(() {
           _isLoadingDates = false;
@@ -3500,6 +3624,15 @@ class _PlaybackTabState extends State<_PlaybackTab> {
   @override
   void didUpdateWidget(covariant _PlaybackTab oldWidget) {
     super.didUpdateWidget(oldWidget);
+    // Live view only learns the real transport once it connects, so the
+    // first load runs with `isWan` still null and takes the LAN path — which
+    // finds nothing on a WAN-only camera. Reload when the answer arrives,
+    // and again if the transport later flips.
+    if (widget.isWan != oldWidget.isWan) {
+      unawaited(_closeCurrentClip());
+      _loadDatesWithRecordings();
+      return;
+    }
     final becameActive = widget.isActive && !oldWidget.isActive;
     final becameInactive = !widget.isActive && oldWidget.isActive;
     if (!becameActive && !becameInactive) return;
@@ -3608,14 +3741,15 @@ class _PlaybackTabState extends State<_PlaybackTab> {
       return;
     }
 
-    final result = await recordings.getRecordings(
+    final result = await _getRecordings(
       start: _dayStartEpoch,
       end: _dayEndEpoch,
+      context: '_loadClipsForDay',
     );
     if (!mounted) return;
     switch (result) {
       case CameraSuccess(:final value):
-        final clips = List.of(value.clips)
+        final clips = List.of(value)
           ..sort((a, b) => a.start.compareTo(b.start));
         _logPlayback(
           '_loadClipsForDay($_dayStartEpoch..$_dayEndEpoch): '
@@ -3654,15 +3788,15 @@ class _PlaybackTabState extends State<_PlaybackTab> {
 
   Future<void> _closeCurrentClip() async {
     final controller = _clipController;
-    final proxy = _proxy;
+    final session = _clipSession;
     _positionTimer?.cancel();
     _positionTimer = null;
     _clipController = null;
     _currentClip = null;
-    _proxy = null;
+    _clipSession = null;
     _sessionStartEpoch = null;
     await controller?.dispose();
-    await proxy?.stop();
+    await session?.stop();
   }
 
   /// Bumped by every [_openClip] call; a call whose id no longer matches
@@ -3687,51 +3821,34 @@ class _PlaybackTabState extends State<_PlaybackTab> {
   /// local loopback URL. Mirrors the sibling `nuraeye-rt` app's
   /// `RecordingTimelineScreen._startPlaybackAt` closely — see that method's
   /// own doc/history for the real-hardware bugs this exact sequencing
-  /// already fixes (assigning `_proxy`/`_controller` before their own
+  /// already fixes (assigning `_clipSession`/`_controller` before their own
   /// `await`s resolve, so a `dispose()`/tab-switch racing mid-open can still
   /// find and tear them down; not looping the fMP4 stream; declaring a real
   /// duration so the player's position is trustworthy).
-  Future<void> _openClip(
+  /// LAN: resolve the clip to an `rtsp(s)://` URI and stream it through a
+  /// local remux proxy.
+  Future<_ClipSession?> _openLanClipSession(
     RecordingClip clip, {
-    required int? seekToEpochSeconds,
+    required int? seekTo,
   }) async {
     final replayControl = _replayControl;
-    if (replayControl == null) return;
-    final requestId = ++_openClipRequestId;
-    _pendingClipId = clip.id;
-    if (widget.isActive) {
-      widget.onClipStateChanged(null, _PlaybackAvailability.loading);
-    }
+    final connection = widget.connection;
+    if (replayControl == null || connection == null) return null;
 
     final uriResult = await replayControl.getReplayUri(clip.id.toString());
-    if (!mounted || requestId != _openClipRequestId) return;
     final String replayUri;
     switch (uriResult) {
       case CameraSuccess(:final value):
         replayUri = value;
       case CameraFailure(:final reason):
         _logPlayback('_openClip(${clip.id}): GetReplayUri failed: $reason');
-        _pendingClipId = null;
-        if (widget.isActive) {
-          widget.onClipStateChanged(null, _PlaybackAvailability.noRecording);
-        }
-        return;
+        return null;
       case CameraTimeout():
         _logPlayback('_openClip(${clip.id}): GetReplayUri timed out');
-        _pendingClipId = null;
-        if (widget.isActive) {
-          widget.onClipStateChanged(null, _PlaybackAvailability.noRecording);
-        }
-        return;
+        return null;
     }
 
-    final connection = widget.connection;
-    if (connection == null) return;
     final parsed = Uri.parse(replayUri);
-    final seekTo = seekToEpochSeconds != null && seekToEpochSeconds > clip.start
-        ? seekToEpochSeconds
-        : null;
-    final sessionStart = seekTo ?? clip.start;
     final proxy = RtspRemuxProxy(
       host: parsed.host,
       port: parsed.port,
@@ -3742,31 +3859,93 @@ class _PlaybackTabState extends State<_PlaybackTab> {
       seekToEpochSeconds: seekTo,
       clipEpochEnd: clip.end,
     );
-
     try {
       await proxy.start();
     } catch (e) {
       _logPlayback('_openClip(${clip.id}): RtspRemuxProxy.start() failed: $e');
       await proxy.stop();
-      if (!mounted || requestId != _openClipRequestId) return;
+      return null;
+    }
+    return _LanClipSession(proxy);
+  }
+
+  /// WAN: ask the camera to push the clip into its own `<thing>-playback` KVS
+  /// stream, then read that back. A seek is a fresh Start at an offset —
+  /// this screen never uses the camera's in-place seek, matching the LAN
+  /// path, where seeking also reopens the session.
+  Future<_ClipSession?> _openWanClipSession(
+    RecordingClip clip, {
+    required int? seekTo,
+  }) async {
+    final control = _wanClipPlayback;
+    if (control == null) return null;
+
+    // One playback session camera-wide — release whatever the camera still
+    // holds before asking for another, or the new Start replaces a session
+    // this app has already forgotten about.
+    await control.stop();
+    final startMs = seekTo == null ? 0 : (seekTo - clip.start) * 1000;
+    final startResult = await control.startClip(clip.id, startMs: startMs);
+    if (startResult is! CameraSuccess<void>) {
+      _logPlayback('_openClip(${clip.id}): StartClipPlayback failed');
+      return null;
+    }
+
+    final media = KvsMediaLiveViewSession(streamName: control.streamName)
+      ..onLog = _logPlayback;
+    try {
+      await media.start();
+    } catch (e) {
+      _logPlayback('_openClip(${clip.id}): KVS playback session failed: $e');
+      await media.stop();
+      await control.stop();
+      return null;
+    }
+    if (media.url == null) {
+      await media.stop();
+      await control.stop();
+      return null;
+    }
+    return _WanClipSession(control, media);
+  }
+
+  Future<void> _openClip(
+    RecordingClip clip, {
+    required int? seekToEpochSeconds,
+  }) async {
+    final requestId = ++_openClipRequestId;
+    _pendingClipId = clip.id;
+    if (widget.isActive) {
+      widget.onClipStateChanged(null, _PlaybackAvailability.loading);
+    }
+
+    final seekTo = seekToEpochSeconds != null && seekToEpochSeconds > clip.start
+        ? seekToEpochSeconds
+        : null;
+    final sessionStart = seekTo ?? clip.start;
+    final session = _useWan
+        ? await _openWanClipSession(clip, seekTo: seekTo)
+        : await _openLanClipSession(clip, seekTo: seekTo);
+
+    if (!mounted || requestId != _openClipRequestId) {
+      await session?.stop();
+      return;
+    }
+    if (session == null) {
       _pendingClipId = null;
       if (widget.isActive) {
         widget.onClipStateChanged(null, _PlaybackAvailability.noRecording);
       }
       return;
     }
-    if (!mounted || requestId != _openClipRequestId) {
-      await proxy.stop();
-      return;
-    }
 
     // Whatever clip is currently open (if any) — captured now, *before*
-    // `_proxy`/`_clipController` get pointed at the new session below, so
-    // it can be torn down by these exact references once the new session
+    // `_clipSession`/`_clipController` get pointed at the new session below,
+    // so it can be torn down by these exact references once the new session
     // is confirmed ready. Real bug, found 2026-09-07 from a direct user
     // report ("for 1 second it is showing the flutter error"): this used
-    // to instead call `_closeCurrentClip()` (which reads the `_proxy`/
-    // `_clipController` *fields*) after already assigning `_proxy = proxy`
+    // to instead call `_closeCurrentClip()` (which reads the `_clipSession`/
+    // `_clipController` *fields*) after already assigning the new session
     // for dispose-race safety (below) — so it tore down the brand-new
     // session it had just spent a full DESCRIBE/SETUP/PLAY round trip
     // opening, not the old one. Confirmed via logcat: a real RTSP session
@@ -3775,7 +3954,7 @@ class _PlaybackTabState extends State<_PlaybackTab> {
     // it — visible on screen as a brief flash of video/loading before
     // `_PlaybackAvailability` fell back to an error/unavailable state.
     final oldController = _clipController;
-    final oldProxy = _proxy;
+    final oldSession = _clipSession;
     _positionTimer?.cancel();
     _positionTimer = null;
 
@@ -3784,8 +3963,8 @@ class _PlaybackTabState extends State<_PlaybackTab> {
     // `_startPlaybackAt`: a `dispose()`/tab-switch racing mid-open can
     // still find and tear this down via these fields, wherever this
     // method itself is currently stuck.
-    _proxy = proxy;
-    final newController = VideoPlayerController.networkUrl(proxy.url!);
+    _clipSession = session;
+    final newController = VideoPlayerController.networkUrl(session.url);
     setState(() => _clipController = newController);
 
     try {
@@ -3795,10 +3974,10 @@ class _PlaybackTabState extends State<_PlaybackTab> {
       _logPlayback(
         '_openClip(${clip.id}): VideoPlayerController init/play failed: $e',
       );
-      if (identical(_proxy, proxy)) _proxy = null;
+      if (identical(_clipSession, session)) _clipSession = null;
       if (identical(_clipController, newController)) _clipController = null;
       await newController.dispose();
-      await proxy.stop();
+      await session.stop();
       if (!mounted || requestId != _openClipRequestId) return;
       _pendingClipId = null;
       if (widget.isActive) {
@@ -3807,10 +3986,10 @@ class _PlaybackTabState extends State<_PlaybackTab> {
       return;
     }
     if (!mounted || requestId != _openClipRequestId) {
-      if (identical(_proxy, proxy)) _proxy = null;
+      if (identical(_clipSession, session)) _clipSession = null;
       if (identical(_clipController, newController)) _clipController = null;
       await newController.dispose();
-      await proxy.stop();
+      await session.stop();
       return;
     }
 
@@ -3818,7 +3997,7 @@ class _PlaybackTabState extends State<_PlaybackTab> {
     // captured old references, never the fields (which already point at
     // the new session by this point).
     await oldController?.dispose();
-    await oldProxy?.stop();
+    await oldSession?.stop();
 
     _pendingClipId = null;
     setState(() {
@@ -3829,18 +4008,18 @@ class _PlaybackTabState extends State<_PlaybackTab> {
     if (widget.isActive) {
       widget.onClipStateChanged(newController, _PlaybackAvailability.ready);
     }
-    _startPositionTimer(proxy, clip);
+    _startPositionTimer(session, clip);
   }
 
-  /// Polls [proxy]/[clip] once a second — see [_positionTimer]'s own doc.
-  void _startPositionTimer(RtspRemuxProxy proxy, RecordingClip clip) {
+  /// Polls [session]/[clip] once a second — see [_positionTimer]'s own doc.
+  void _startPositionTimer(_ClipSession session, RecordingClip clip) {
     _positionTimer?.cancel();
     _positionTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (!mounted || !identical(_proxy, proxy)) {
+      if (!mounted || !identical(_clipSession, session)) {
         timer.cancel();
         return;
       }
-      if (proxy.isSessionEnded) {
+      if (session.isSessionEnded) {
         timer.cancel();
         _advanceToNextClipAfter(clip);
         return;
@@ -3852,7 +4031,7 @@ class _PlaybackTabState extends State<_PlaybackTab> {
       final playerPos = sessionStart + (playerPositionMs ~/ 1000);
       final pos = playerPositionMs > 0
           ? playerPos
-          : proxy.lastKnownPositionEpochSeconds;
+          : session.lastKnownPositionEpochSeconds;
       if (pos == null) return;
       if (_clipContaining(pos) != null) {
         setState(() => _cursorEpochSeconds = pos);
@@ -3866,7 +4045,7 @@ class _PlaybackTabState extends State<_PlaybackTab> {
   }
 
   /// Called once a playback session's own clip has genuinely finished
-  /// ([RtspRemuxProxy.isSessionEnded]) — looks for the earliest known clip
+  /// ([_ClipSession.isSessionEnded]) — looks for the earliest known clip
   /// that starts at or after [clip]'s end (not assuming it's adjacent —
   /// Event-Triggered recording routinely has real gaps) and opens a fresh
   /// session there automatically, the same way an ordinary video gallery

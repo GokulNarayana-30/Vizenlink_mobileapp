@@ -3,7 +3,8 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart' show debugPrint;
 
-import 'fmp4_muxer.dart';
+import 'package:camera_api/camera_api.dart';
+
 import 'rtsp_replay_client.dart';
 
 /// One playback session: opens [RtspReplaySession] against the camera's playback RTSPS listener,

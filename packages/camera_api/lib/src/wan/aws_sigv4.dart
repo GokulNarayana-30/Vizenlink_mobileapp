@@ -69,4 +69,63 @@ class AwsSigV4 {
 
     return Uri.parse('wss://$endpoint$canonicalUri?$query');
   }
+
+  /// Signs a POST request with a JSON body — header-based SigV4 (`Authorization` header), the
+  /// other flavor alongside [presignWebSocketUrl]'s query-string variant. Added for
+  /// `KvsGetMediaClient`'s `POST /getMedia` call (`kinesisvideo` service — **not**
+  /// `kinesis-video-media`; verified directly against real `boto3`/`botocore` traffic before
+  /// writing this, since a wrong service-signing name silently produces a rejected signature
+  /// with no useful error otherwise: `botocore`'s own `ClientModel.signing_name` for the
+  /// `kinesis-video-media` boto3 client is `kinesisvideo`, and a captured real request confirmed
+  /// the exact canonical-header set (`content-type;host;x-amz-date[;x-amz-security-token]` —
+  /// note `x-amz-security-token` **is** part of `SignedHeaders` whenever a session token is
+  /// present, unlike some other AWS SDKs' behavior) and body-hash placement below).
+  ///
+  /// Returns the full header map to send with the request — caller still owns constructing and
+  /// sending the actual HTTP request (this package uses `package:http`'s streamed-response API
+  /// for `GetMedia` specifically, since the response body is an unbounded live byte stream, not
+  /// a normal buffered response).
+  static Map<String, String> signJsonPost({
+    required WanAwsCredentials credentials,
+    required String host,
+    required String path,
+    required String region,
+    required String service,
+    required List<int> bodyBytes,
+    DateTime? now,
+  }) {
+    const algorithm = 'AWS4-HMAC-SHA256';
+    now = (now ?? DateTime.now()).toUtc();
+    final amzDate =
+        '${now.year.toString().padLeft(4, '0')}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}'
+        'T${now.hour.toString().padLeft(2, '0')}${now.minute.toString().padLeft(2, '0')}${now.second.toString().padLeft(2, '0')}Z';
+    final dateStamp = amzDate.substring(0, 8);
+    final credentialScope = '$dateStamp/$region/$service/aws4_request';
+
+    final headers = <String, String>{
+      'content-type': 'application/json',
+      'host': host,
+      'x-amz-date': amzDate,
+      if (credentials.sessionToken.isNotEmpty) 'x-amz-security-token': credentials.sessionToken,
+    };
+    final signedHeaderNames = headers.keys.toList()..sort();
+    final canonicalHeaders =
+        signedHeaderNames.map((k) => '$k:${headers[k]}\n').join();
+    final signedHeadersList = signedHeaderNames.join(';');
+    final payloadHash = sha256.convert(bodyBytes).toString();
+
+    final canonicalRequest =
+        'POST\n$path\n\n$canonicalHeaders\n$signedHeadersList\n$payloadHash';
+    final stringToSign =
+        '$algorithm\n$amzDate\n$credentialScope\n${_sha256Hex(canonicalRequest)}';
+
+    final signingKey = _signingKey(credentials.secretKey, dateStamp, region, service);
+    final signature = _hex(_hmac(signingKey, stringToSign));
+
+    return {
+      ...headers,
+      'Authorization': '$algorithm Credential=${credentials.accessKeyId}/$credentialScope, '
+          'SignedHeaders=$signedHeadersList, Signature=$signature',
+    };
+  }
 }

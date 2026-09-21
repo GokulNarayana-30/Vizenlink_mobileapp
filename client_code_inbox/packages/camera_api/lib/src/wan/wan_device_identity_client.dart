@@ -29,11 +29,27 @@ class WanDeviceIdentityClient {
 
   final IotCommandClient _iot;
 
+  /// [retryOnTimeout] — pass `false` from a caller that polls on its own schedule (e.g. a
+  /// reachability ping running every few seconds), where retrying doubles this call's worst-case
+  /// latency to buy a second chance the next tick provides anyway.
+  ///
+  /// **Real bug fixed 2026-09-15**: [timeout] was declared here but never passed to
+  /// [IotCommandClient.sendCommandWithResponse], so it silently fell through to that method's own
+  /// 12s default — and, with the one-shot retry on top, took up to ~24s regardless of what a
+  /// caller actually asked for. A reachability-ping caller requesting a short, single-attempt
+  /// check had no way to actually get one, which (app-side) let a single slow WAN round trip
+  /// overrun a short poll interval and trip an aggressive offline-backoff window for a camera
+  /// that was actually fine.
   Future<CameraResult<({String name, String location, String timezone})>> getDeviceIdentity({
     Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
   }) async {
     try {
-      final output = await _iot.sendCommandWithResponse(IotCommandClient.getDeviceIdentity);
+      final output = await _iot.sendCommandWithResponse(
+        IotCommandClient.getDeviceIdentity,
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
+      );
       if (output == null) return const CameraTimeout();
       final name = output['name'];
       final location = output['location'];
