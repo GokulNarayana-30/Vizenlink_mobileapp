@@ -16,6 +16,8 @@ class WanRecordingsClient {
     required int start,
     required int end,
     required int tzOffsetMinutes,
+    Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
   }) async {
     try {
       final output = await _iot.sendCommandWithResponse(
@@ -25,6 +27,8 @@ class WanRecordingsClient {
           'end': end,
           'tz_offset_minutes': tzOffsetMinutes,
         },
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
       );
       if (output == null) return const CameraTimeout();
       final dates = output['dates'];
@@ -55,6 +59,8 @@ class WanRecordingsClient {
     required int start,
     required int end,
     int maxPages = 30,
+    Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
   }) async {
     final clips = <RecordingClip>[];
     try {
@@ -62,6 +68,8 @@ class WanRecordingsClient {
         final output = await _iot.sendCommandWithResponse(
           IotCommandClient.getRecordings,
           params: {'start': start, 'end': end, 'offset': clips.length},
+          timeoutSeconds: timeout.inMilliseconds / 1000,
+          retryOnTimeout: retryOnTimeout,
         );
         if (output == null) return const CameraTimeout();
         final list = output['clips'];

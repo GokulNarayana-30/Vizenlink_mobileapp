@@ -15,16 +15,25 @@ class WanAntiFlickerClient {
 
   Future<CameraResult<AntiFlickerMode>> getAntiFlickerMode({
     Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
   }) async {
     try {
-      final output = await _iot.sendCommandWithResponse(IotCommandClient.getAntiFlickerMode);
+      final output = await _iot.sendCommandWithResponse(
+        IotCommandClient.getAntiFlickerMode,
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
+      );
       if (output == null) return const CameraTimeout();
       final modeStr = output['mode'];
       if (modeStr is! String) {
-        return CameraFailure('GetAntiFlickerMode response missing mode: $output');
+        return CameraFailure(
+          'GetAntiFlickerMode response missing mode: $output',
+        );
       }
       final mode = AntiFlickerModeWire.fromWire(modeStr);
-      if (mode == null) return CameraFailure('Unrecognized anti-flicker mode: $modeStr');
+      if (mode == null) {
+        return CameraFailure('Unrecognized anti-flicker mode: $modeStr');
+      }
       return CameraSuccess(mode);
     } catch (e) {
       return CameraFailure(e.toString());
@@ -34,11 +43,14 @@ class WanAntiFlickerClient {
   Future<CameraResult<void>> setAntiFlickerMode(
     AntiFlickerMode mode, {
     Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
   }) async {
     try {
       final output = await _iot.sendCommandWithResponse(
         IotCommandClient.setAntiFlickerMode,
         params: {'mode': mode.wireValue},
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
       );
       if (output == null) return const CameraTimeout();
       return const CameraSuccess(null);

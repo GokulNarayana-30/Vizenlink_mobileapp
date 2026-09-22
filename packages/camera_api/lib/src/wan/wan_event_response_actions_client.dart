@@ -6,16 +6,23 @@ import 'package:camera_api/camera_api.dart';
 /// type's action set) as LAN. No WAN "supported deterrence options" command — see
 /// `CapabilitiesClient`'s `supportedEventDeterrenceOptions`, LAN-only.
 class WanEventResponseActionsClient {
-  WanEventResponseActionsClient(String thingName, {IotCommandClient? iotCommandClient})
-    : _iot = iotCommandClient ?? IotCommandClient(thingName);
+  WanEventResponseActionsClient(
+    String thingName, {
+    IotCommandClient? iotCommandClient,
+  }) : _iot = iotCommandClient ?? IotCommandClient(thingName);
 
   final IotCommandClient _iot;
 
   Future<CameraResult<Map<String, List<String>>>> getEventResponseActions({
     Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
   }) async {
     try {
-      final output = await _iot.sendCommandWithResponse(IotCommandClient.getEventResponseActions);
+      final output = await _iot.sendCommandWithResponse(
+        IotCommandClient.getEventResponseActions,
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
+      );
       if (output == null) return const CameraTimeout();
       return CameraSuccess(
         output.map(
@@ -35,11 +42,14 @@ class WanEventResponseActionsClient {
   Future<CameraResult<void>> setEventResponseActions(
     Map<String, List<String>> changes, {
     Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
   }) async {
     try {
       final output = await _iot.sendCommandWithResponse(
         IotCommandClient.setEventResponseActions,
         params: changes,
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
       );
       if (output == null) return const CameraTimeout();
       return const CameraSuccess(null);

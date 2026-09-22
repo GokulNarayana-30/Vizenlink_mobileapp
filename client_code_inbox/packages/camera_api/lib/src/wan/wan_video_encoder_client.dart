@@ -1,6 +1,5 @@
 import 'package:camera_api/camera_api.dart';
 
-
 /// `FR-NE-100`/`FR-MOB-099`: WAN counterpart to `OnvifVideoEncoderClient` — no WAN transport
 /// exists for ONVIF SOAP at all, so this calls the dedicated `NuraeyeAwsIotCommand_*
 /// VideoEncoderSettings` actions instead. Structurally matches `OnvifVideoEncoderClient`'s three
@@ -34,11 +33,14 @@ class WanVideoEncoderClient {
   Future<CameraResult<VideoEncoderSettings>> getVideoEncoderSettings({
     String configToken = kHighResVideoEncoderToken,
     Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
   }) async {
     try {
       final output = await _iot.sendCommandWithResponse(
         IotCommandClient.getVideoEncoderSettings,
         params: {'config_token': configToken},
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
       );
       if (output == null) return const CameraTimeout();
       return _parseSettings(output, configToken);
@@ -60,6 +62,7 @@ class WanVideoEncoderClient {
     VideoEncoderSettings settings, {
     String? configToken,
     Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
   }) async {
     final token = configToken ?? settings.token;
     try {
@@ -77,6 +80,8 @@ class WanVideoEncoderClient {
           'encoding': settings.encoding,
           'cbr': settings.cbr,
         },
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
       );
       if (output == null) return const CameraTimeout();
       // Echoes back the actual applied (post-clamp) values, same as the LAN path.
@@ -90,20 +95,26 @@ class WanVideoEncoderClient {
   /// `GetVideoEncoderConfigurationOptions` parsing (see [OnvifVideoEncoderClient]'s class doc
   /// for why per-encoding, not a single flattened set): H264 and H265 report different
   /// bitrate/quality/GOV/frame-rate ranges, profile lists, and CBR support on this firmware.
-  Future<CameraResult<VideoEncoderSettingsOptions>> getVideoEncoderSettingsOptions({
+  Future<CameraResult<VideoEncoderSettingsOptions>>
+  getVideoEncoderSettingsOptions({
     String configToken = kHighResVideoEncoderToken,
     Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
   }) async {
     try {
       final output = await _iot.sendCommandWithResponse(
         IotCommandClient.getVideoEncoderSettingsOptions,
         params: {'config_token': configToken},
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
       );
       if (output == null) return const CameraTimeout();
 
       final rawEncodings = output['encodings'];
       if (rawEncodings is! List || rawEncodings.isEmpty) {
-        return CameraFailure('GetVideoEncoderSettingsOptions response missing encodings: $output');
+        return CameraFailure(
+          'GetVideoEncoderSettingsOptions response missing encodings: $output',
+        );
       }
 
       final encodings = <EncodingOptions>[];
@@ -129,20 +140,32 @@ class WanVideoEncoderClient {
           continue;
         }
 
-        final frameRateInts = frameRates.whereType<num>().map((n) => n.toInt()).toList();
+        final frameRateInts = frameRates
+            .whereType<num>()
+            .map((n) => n.toInt())
+            .toList();
         if (frameRateInts.isEmpty) continue;
 
         final resolutionList = <Resolution>[
           for (final r in resolutions)
             if (r is Map && r['width'] is num && r['height'] is num)
-              (width: (r['width'] as num).toInt(), height: (r['height'] as num).toInt()),
+              (
+                width: (r['width'] as num).toInt(),
+                height: (r['height'] as num).toInt(),
+              ),
         ];
 
         encodings.add(
           EncodingOptions(
             encoding: encoding,
-            bitrateRange: IntRange((bitrate['min'] as num).toInt(), (bitrate['max'] as num).toInt()),
-            qualityRange: IntRange((quality['min'] as num).toInt(), (quality['max'] as num).toInt()),
+            bitrateRange: IntRange(
+              (bitrate['min'] as num).toInt(),
+              (bitrate['max'] as num).toInt(),
+            ),
+            qualityRange: IntRange(
+              (quality['min'] as num).toInt(),
+              (quality['max'] as num).toInt(),
+            ),
             govLengthRange: IntRange(
               (govLength['min'] as num).toInt(),
               (govLength['max'] as num).toInt(),
@@ -159,7 +182,9 @@ class WanVideoEncoderClient {
       }
 
       if (encodings.isEmpty) {
-        return CameraFailure('GetVideoEncoderSettingsOptions response has no usable encodings: $output');
+        return CameraFailure(
+          'GetVideoEncoderSettingsOptions response has no usable encodings: $output',
+        );
       }
       return CameraSuccess(VideoEncoderSettingsOptions(encodings: encodings));
     } catch (e) {
@@ -169,7 +194,10 @@ class WanVideoEncoderClient {
 
   /// [fallbackToken] — used only if the firmware response doesn't echo `config_token` back
   /// (older firmware, pre-2026-09-10); real hardware always includes it.
-  CameraResult<VideoEncoderSettings> _parseSettings(Map<String, dynamic> output, String fallbackToken) {
+  CameraResult<VideoEncoderSettings> _parseSettings(
+    Map<String, dynamic> output,
+    String fallbackToken,
+  ) {
     final token = output['config_token'];
     final bitrate = output['bitrate'];
     final frameRate = output['frame_rate'];
@@ -189,7 +217,9 @@ class WanVideoEncoderClient {
         height is! num ||
         encoding is! String ||
         cbr is! bool) {
-      return CameraFailure('VideoEncoderSettings response missing fields: $output');
+      return CameraFailure(
+        'VideoEncoderSettings response missing fields: $output',
+      );
     }
     return CameraSuccess(
       VideoEncoderSettings(

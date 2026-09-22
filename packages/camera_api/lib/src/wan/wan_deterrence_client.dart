@@ -13,9 +13,14 @@ class WanDeterrenceClient {
 
   Future<CameraResult<DeterrenceStatus>> getDeterrenceStatus({
     Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
   }) async {
     try {
-      final output = await _iot.sendCommandWithResponse(IotCommandClient.getDeterrenceStatus);
+      final output = await _iot.sendCommandWithResponse(
+        IotCommandClient.getDeterrenceStatus,
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
+      );
       if (output == null) return const CameraTimeout();
       return CameraSuccess(DeterrenceStatus.fromJson(output));
     } catch (e) {
@@ -26,11 +31,14 @@ class WanDeterrenceClient {
   Future<CameraResult<void>> activateDeterrence(
     String action, {
     Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
   }) async {
     try {
       final output = await _iot.sendCommandWithResponse(
         IotCommandClient.activateDeterrence,
         params: {'action': action},
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
       );
       if (output == null) return const CameraTimeout();
       return const CameraSuccess(null);
@@ -42,11 +50,14 @@ class WanDeterrenceClient {
   Future<CameraResult<void>> deactivateDeterrence(
     String action, {
     Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
   }) async {
     try {
       final output = await _iot.sendCommandWithResponse(
         IotCommandClient.deactivateDeterrence,
         params: {'action': action},
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
       );
       if (output == null) return const CameraTimeout();
       return const CameraSuccess(null);
@@ -57,9 +68,14 @@ class WanDeterrenceClient {
 
   Future<CameraResult<Map<String, int>>> getDeterrenceDurations({
     Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
   }) async {
     try {
-      final output = await _iot.sendCommandWithResponse(IotCommandClient.getDeterrenceDurations);
+      final output = await _iot.sendCommandWithResponse(
+        IotCommandClient.getDeterrenceDurations,
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
+      );
       if (output == null) return const CameraTimeout();
       return CameraSuccess<Map<String, int>>(
         output.map((key, dynamic v) => MapEntry(key, (v as num).toInt())),
@@ -73,11 +89,14 @@ class WanDeterrenceClient {
   Future<CameraResult<void>> setDeterrenceDurations(
     Map<String, int> changes, {
     Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
   }) async {
     try {
       final output = await _iot.sendCommandWithResponse(
         IotCommandClient.setDeterrenceDurations,
         params: changes,
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
       );
       if (output == null) return const CameraTimeout();
       return const CameraSuccess(null);
@@ -89,10 +108,13 @@ class WanDeterrenceClient {
   /// Camera-reported valid range for each duration/count key — same semantics as the LAN client.
   Future<CameraResult<DeterrenceDurationOptions>> getDeterrenceDurationOptions({
     Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
   }) async {
     try {
       final output = await _iot.sendCommandWithResponse(
         IotCommandClient.getDeterrenceDurationOptions,
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
       );
       if (output == null) return const CameraTimeout();
       return CameraSuccess(DeterrenceDurationOptions.fromJson(output));

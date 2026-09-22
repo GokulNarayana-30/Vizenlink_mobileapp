@@ -111,3 +111,26 @@ setter (`createTimestampOsd`/`updateTimestampOsd`/`WanOsdClient.setOsd`) accepts
 the bounds cannot be acted on. A font-size control was scoped for
 `on_screen_display_screen.dart` and **not built** for this reason — it needs a `font_size`
 parameter on SetOSD first.
+
+## 2026-09-22 drop — integrated
+
+- **Per-command timeout/retry is now plumbed through 22 of 24 `Wan*Client` files** (was 3). The
+  two without it are `wan_auth.dart` (a config holder) and `wan_live_view_client.dart` (the
+  abstract interface), both legitimately exempt. Screens can now pass `timeoutSeconds`/
+  `retryOnTimeout` instead of being stuck with the 12s default plus a one-shot retry (up to 24s).
+  All parameters are optional with defaults, so this was API-backward-compatible.
+- **`WanClipPlaybackClient.heartbeat()`** (`GetClipPlaybackStatus`, command 82). **The camera
+  stops an unattended clip-playback session after 30s with no heartbeat**, so a caller must poll
+  roughly every 10s for as long as the session is meant to stay open. Wired into
+  `camera_live_screen.dart`'s `_WanClipSession`, which starts a 10s periodic timer on construction
+  and cancels it in `stop()`. Without this, WAN recorded playback dies half a minute in.
+- **`STREAMING_GUIDE.md`'s profile guidance is restored** (the paragraph lost in the 2026-09-21
+  verbatim swap) and now also states that `getProfiles()` must be re-read live before a reconnect
+  rather than trusted from cache, since a stream's encoder config — and so its resolution and
+  codec — can change while a session is down. `live_view_controller.dart`'s `_connectRtsp` now
+  refreshes profiles with `forceRefresh: true` in the background on every connect, still never
+  awaited so it stays off the path to first frame.
+
+**Still open for the senior:** the OSD `font_size` setter (bounds are reported, but no setter
+accepts a value, so the font-size control remains unbuildable), and test coverage — the suite is
+still 169 tests, with no coverage for `heartbeat()` or the newly plumbed timeout/retry parameters.

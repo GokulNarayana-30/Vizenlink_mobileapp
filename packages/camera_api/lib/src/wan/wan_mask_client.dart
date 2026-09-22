@@ -1,6 +1,5 @@
 import 'package:camera_api/camera_api.dart';
 
-
 /// WAN counterpart to `MaskClient` (`camera_api`'s LAN ONVIF Media2 privacy-mask client) —
 /// `GetMaskConfigs`/`SetMaskConfig`/`DeleteMaskConfig`/`GetMaskOptions` (commands `41`-`44`),
 /// added for the 2026-08-05 options-parity audit
@@ -16,12 +15,19 @@ class WanMaskClient {
 
   Future<CameraResult<List<MaskEntry>>> getMasks({
     Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
   }) async {
     try {
-      final output = await _iot.sendCommandWithResponse(IotCommandClient.getMaskConfigs);
+      final output = await _iot.sendCommandWithResponse(
+        IotCommandClient.getMaskConfigs,
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
+      );
       if (output == null) return const CameraTimeout();
       final masks = output['masks'];
-      if (masks is! List) return CameraFailure('GetMaskConfigs response missing fields: $output');
+      if (masks is! List) {
+        return CameraFailure('GetMaskConfigs response missing fields: $output');
+      }
       final entries = <MaskEntry>[];
       for (final m in masks) {
         if (m is! Map) continue;
@@ -29,11 +35,19 @@ class WanMaskClient {
         final enabled = m['enabled'];
         final type = m['type'];
         final points = m['points'];
-        if (token is! String || enabled is! bool || type is! String || points is! List) continue;
+        if (token is! String ||
+            enabled is! bool ||
+            type is! String ||
+            points is! List) {
+          continue;
+        }
         final polygon = <OnvifPoint>[
           for (final p in points)
             if (p is Map && p['x'] is num && p['y'] is num)
-              OnvifPoint((p['x'] as num).toDouble(), (p['y'] as num).toDouble()),
+              OnvifPoint(
+                (p['x'] as num).toDouble(),
+                (p['y'] as num).toDouble(),
+              ),
         ];
         final color = m['color'];
         entries.add(
@@ -43,9 +57,15 @@ class WanMaskClient {
             polygon: polygon,
             type: type,
             enabled: enabled,
-            colorX: (color is Map && color['x'] is num) ? (color['x'] as num).toDouble() : null,
-            colorY: (color is Map && color['y'] is num) ? (color['y'] as num).toDouble() : null,
-            colorZ: (color is Map && color['z'] is num) ? (color['z'] as num).toDouble() : null,
+            colorX: (color is Map && color['x'] is num)
+                ? (color['x'] as num).toDouble()
+                : null,
+            colorY: (color is Map && color['y'] is num)
+                ? (color['y'] as num).toDouble()
+                : null,
+            colorZ: (color is Map && color['z'] is num)
+                ? (color['z'] as num).toDouble()
+                : null,
             colorspace: (color is Map) ? color['colorspace'] as String? : null,
           ),
         );
@@ -58,9 +78,14 @@ class WanMaskClient {
 
   Future<CameraResult<MaskOptions>> getMaskOptions({
     Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
   }) async {
     try {
-      final output = await _iot.sendCommandWithResponse(IotCommandClient.getMaskOptions);
+      final output = await _iot.sendCommandWithResponse(
+        IotCommandClient.getMaskOptions,
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
+      );
       if (output == null) return const CameraTimeout();
       final types = output['types'];
       final colorList = output['color_list'];
@@ -76,7 +101,11 @@ class WanMaskClient {
           types: types.whereType<String>().toList(),
           colorList: [
             for (final c in colorList)
-              if (c is Map && c['x'] is num && c['y'] is num && c['z'] is num && c['colorspace'] is String)
+              if (c is Map &&
+                  c['x'] is num &&
+                  c['y'] is num &&
+                  c['z'] is num &&
+                  c['colorspace'] is String)
                 MaskColor(
                   x: (c['x'] as num).toDouble(),
                   y: (c['y'] as num).toDouble(),
@@ -100,6 +129,7 @@ class WanMaskClient {
     required String type,
     MaskColor? color,
     Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
   }) async {
     try {
       final output = await _iot.sendCommandWithResponse(
@@ -108,10 +138,19 @@ class WanMaskClient {
           if (token.isNotEmpty) 'token': token,
           'enabled': enabled,
           'type': type,
-          'points': [for (final p in polygon) {'x': p.x, 'y': p.y}],
+          'points': [
+            for (final p in polygon) {'x': p.x, 'y': p.y},
+          ],
           if (color != null)
-            'color': {'x': color.x, 'y': color.y, 'z': color.z, 'colorspace': color.colorspace},
+            'color': {
+              'x': color.x,
+              'y': color.y,
+              'z': color.z,
+              'colorspace': color.colorspace,
+            },
         },
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
       );
       if (output == null) return const CameraTimeout();
       final resultToken = output['token'];
@@ -124,11 +163,14 @@ class WanMaskClient {
   Future<CameraResult<void>> deleteMask(
     String token, {
     Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
   }) async {
     try {
       final output = await _iot.sendCommandWithResponse(
         IotCommandClient.deleteMaskConfig,
         params: {'token': token},
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
       );
       if (output == null) return const CameraTimeout();
       return const CameraSuccess(null);

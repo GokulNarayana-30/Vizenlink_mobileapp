@@ -226,19 +226,26 @@ class IotCommandClient {
   static const getRecordings = 80;
   static const getRecordingDates = 81;
 
+  /// No params. Reply `{"active": bool}` -- also the lease heartbeat, see `WanClipPlaybackClient.heartbeat()`.
+  static const getClipPlaybackStatus = 82;
+
   /// `StopCloudStreaming` stays fire-and-forget (older command shape, predates `FR-NE-053`'s
   /// request/response pattern) — [token] is optional: omitting it falls back to the camera's
   /// legacy blunt "stop every quality" behavior (`bsp_camera_setCloudStreaming(false)`).
-  Future<void> sendStopCloudStreaming({int? token}) => _transport.publish(thingName, {
-    'command': stopCloudStreaming,
-    if (token != null) 'params': {'token': token},
-  });
+  Future<void> sendStopCloudStreaming({int? token}) =>
+      _transport.publish(thingName, {
+        'command': stopCloudStreaming,
+        if (token != null) 'params': {'token': token},
+      });
 
   /// `FR-CF-154` (2026-09-14): unlike `StopCloudStreaming`, `StartCloudStreaming` now requires
   /// `params.quality` and replies with the viewer's lease token — switched to request/response so
   /// the app can read that token back, matching `GetCloudStreamingStatus`'s existing shape.
   Future<Map<String, dynamic>?> sendStartCloudStreaming(String quality) =>
-      sendCommandWithResponse(startCloudStreaming, params: {'quality': quality});
+      sendCommandWithResponse(
+        startCloudStreaming,
+        params: {'quality': quality},
+      );
 
   /// [isRetry] is set by the one-shot retry below, or (2026-09-15) by
   /// [sendCommandWithResponse]'s own `retryOnTimeout: false` opt-out — the only two callers
@@ -271,7 +278,12 @@ class IotCommandClient {
       if (isRetry) {
         throw Exception('No response from camera (timed out)');
       }
-      return _publishAndWait(command, params: params, timeout: timeout, isRetry: true);
+      return _publishAndWait(
+        command,
+        params: params,
+        timeout: timeout,
+        isRetry: true,
+      );
     }
     if (reply['status'] != 'ok') {
       throw Exception('Command $command failed on camera');

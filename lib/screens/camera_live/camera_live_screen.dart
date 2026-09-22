@@ -3403,10 +3403,21 @@ class _LanClipSession implements _ClipSession {
 /// Both halves stop together — the camera allows one playback session
 /// camera-wide, so a leaked Start would block the next clip.
 class _WanClipSession implements _ClipSession {
-  _WanClipSession(this._control, this._media);
+  _WanClipSession(this._control, this._media) {
+    // The camera stops an unattended playback session after 30s with no
+    // heartbeat (an idle-lease guard against unbounded KVS PutMedia billing
+    // from a vanished client), so this has to keep running for as long as the
+    // session is meant to stay open — same ~10s cadence the WAN health poll
+    // already uses. Without it, playback simply dies half a minute in.
+    _heartbeatTimer = Timer.periodic(
+      const Duration(seconds: 10),
+      (_) => unawaited(_control.heartbeat()),
+    );
+  }
 
   final WanClipPlaybackClient _control;
   final KvsMediaLiveViewSession _media;
+  Timer? _heartbeatTimer;
 
   @override
   Uri get url => _media.url!;
@@ -3421,6 +3432,8 @@ class _WanClipSession implements _ClipSession {
 
   @override
   Future<void> stop() async {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
     await _media.stop();
     await _control.stop();
   }

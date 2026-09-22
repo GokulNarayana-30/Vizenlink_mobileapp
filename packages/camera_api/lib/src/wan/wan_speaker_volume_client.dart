@@ -24,12 +24,21 @@ class WanSpeakerVolumeClient {
 
   Future<CameraResult<int>> getSpeakerVolume({
     Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
   }) async {
     try {
-      final output = await _iot.sendCommandWithResponse(IotCommandClient.getSpeakerVolume);
+      final output = await _iot.sendCommandWithResponse(
+        IotCommandClient.getSpeakerVolume,
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
+      );
       if (output == null) return const CameraTimeout();
       final volume = output['volume'];
-      if (volume is! num) return CameraFailure('GetSpeakerVolume response missing volume: $output');
+      if (volume is! num) {
+        return CameraFailure(
+          'GetSpeakerVolume response missing volume: $output',
+        );
+      }
       return CameraSuccess(volume.toInt());
     } catch (e) {
       return CameraFailure(e.toString());
@@ -39,11 +48,14 @@ class WanSpeakerVolumeClient {
   Future<CameraResult<void>> setSpeakerVolume(
     int volume, {
     Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
   }) async {
     try {
       final output = await _iot.sendCommandWithResponse(
         IotCommandClient.setSpeakerVolume,
         params: {'volume': volume},
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
       );
       if (output == null) return const CameraTimeout();
       return const CameraSuccess(null);

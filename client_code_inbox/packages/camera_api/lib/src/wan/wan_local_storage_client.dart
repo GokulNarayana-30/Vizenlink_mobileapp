@@ -12,10 +12,13 @@ class WanLocalStorageClient {
 
   Future<CameraResult<LocalStorageStatus>> getStatus({
     Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
   }) async {
     try {
       final output = await _iot.sendCommandWithResponse(
         IotCommandClient.getLocalStorageStatus,
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
       );
       if (output == null) return const CameraTimeout();
       final enabled = output['enabled'];
@@ -48,11 +51,14 @@ class WanLocalStorageClient {
   Future<CameraResult<void>> setEnabled(
     bool enabled, {
     Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
   }) async {
     try {
       final output = await _iot.sendCommandWithResponse(
         IotCommandClient.setLocalStorageEnabled,
         params: {'enabled': enabled},
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
       );
       if (output == null) return const CameraTimeout();
       return const CameraSuccess(null);

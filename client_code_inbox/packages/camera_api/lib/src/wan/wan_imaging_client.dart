@@ -1,6 +1,5 @@
 import 'package:camera_api/camera_api.dart';
 
-
 /// WAN counterpart to `OnvifImagingClient`'s Day/Night and WDR fields — `FR-NE-036/055/056/057`
 /// (`GetVideoMode`/`SetVideoMode`/`GetWDRMode`/`SetWDRMode`, pre-existing) plus
 /// `GetImagingSettingsOptions` (command `40`, added for the 2026-08-05 options-parity audit,
@@ -37,12 +36,19 @@ class WanImagingClient {
 
   Future<CameraResult<String>> getDayNightMode({
     Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
   }) async {
     try {
-      final output = await _iot.sendCommandWithResponse(IotCommandClient.getVideoMode);
+      final output = await _iot.sendCommandWithResponse(
+        IotCommandClient.getVideoMode,
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
+      );
       if (output == null) return const CameraTimeout();
       final mode = output['configured_mode'];
-      if (mode is! String) return CameraFailure('GetVideoMode response missing fields: $output');
+      if (mode is! String) {
+        return CameraFailure('GetVideoMode response missing fields: $output');
+      }
       return CameraSuccess(_wanToOnvif[mode] ?? mode.toUpperCase());
     } catch (e) {
       return CameraFailure(e.toString());
@@ -54,13 +60,20 @@ class WanImagingClient {
   /// [getDayNightMode]'s `configured_mode`. `true` = day, `false` = night.
   Future<CameraResult<bool>> getEffectiveDayMode({
     Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
   }) async {
     try {
-      final output = await _iot.sendCommandWithResponse(IotCommandClient.getVideoMode);
+      final output = await _iot.sendCommandWithResponse(
+        IotCommandClient.getVideoMode,
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
+      );
       if (output == null) return const CameraTimeout();
       final state = output['effective_state'];
       if (state is! String) {
-        return CameraFailure('GetVideoMode response missing effective_state: $output');
+        return CameraFailure(
+          'GetVideoMode response missing effective_state: $output',
+        );
       }
       return CameraSuccess(state == 'day');
     } catch (e) {
@@ -72,18 +85,27 @@ class WanImagingClient {
   /// together (the Day/Night status tag). Returns `configuredMode` untranslated, in the same
   /// raw `day`/`night`/`auto` wire vocabulary `nuraeye.c`'s `prvVideoModeToString()` emits on
   /// both LAN and WAN, not [getDayNightMode]'s ON/OFF/AUTO translation.
-  Future<CameraResult<({String configuredMode, bool isDayMode})>> getVideoModeStatus({
+  Future<CameraResult<({String configuredMode, bool isDayMode})>>
+  getVideoModeStatus({
     Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
   }) async {
     try {
-      final output = await _iot.sendCommandWithResponse(IotCommandClient.getVideoMode);
+      final output = await _iot.sendCommandWithResponse(
+        IotCommandClient.getVideoMode,
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
+      );
       if (output == null) return const CameraTimeout();
       final configured = output['configured_mode'];
       final effective = output['effective_state'];
       if (configured is! String || effective is! String) {
         return CameraFailure('GetVideoMode response missing fields: $output');
       }
-      return CameraSuccess((configuredMode: configured, isDayMode: effective == 'day'));
+      return CameraSuccess((
+        configuredMode: configured,
+        isDayMode: effective == 'day',
+      ));
     } catch (e) {
       return CameraFailure(e.toString());
     }
@@ -92,12 +114,15 @@ class WanImagingClient {
   Future<CameraResult<void>> setDayNightMode(
     String onvifMode, {
     Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
   }) async {
     try {
       final wanMode = _onvifToWan[onvifMode] ?? onvifMode.toLowerCase();
       final output = await _iot.sendCommandWithResponse(
         IotCommandClient.setVideoMode,
         params: {'mode': wanMode},
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
       );
       if (output == null) return const CameraTimeout();
       return const CameraSuccess(null);
@@ -108,9 +133,14 @@ class WanImagingClient {
 
   Future<CameraResult<({bool enabled, double level})>> getWdr({
     Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
   }) async {
     try {
-      final output = await _iot.sendCommandWithResponse(IotCommandClient.getWDRMode);
+      final output = await _iot.sendCommandWithResponse(
+        IotCommandClient.getWDRMode,
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
+      );
       if (output == null) return const CameraTimeout();
       final mode = output['mode'];
       final level = output['level'];
@@ -127,11 +157,14 @@ class WanImagingClient {
     bool enabled,
     double level, {
     Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
   }) async {
     try {
       final output = await _iot.sendCommandWithResponse(
         IotCommandClient.setWDRMode,
         params: {'mode': enabled ? 'ON' : 'OFF', 'level': level.round()},
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
       );
       if (output == null) return const CameraTimeout();
       return const CameraSuccess(null);
@@ -143,16 +176,23 @@ class WanImagingClient {
   /// Returns the Day/Night choice list in the same `ON`/`OFF`/`AUTO` vocabulary
   /// [getDayNightMode]/[setDayNightMode] use, plus `wdrSupported`.
   Future<CameraResult<({List<String> dayNightModes, bool wdrSupported})>>
-  getImagingOptions({Duration timeout = const Duration(seconds: 15)}) async {
+  getImagingOptions({
+    Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
+  }) async {
     try {
       final output = await _iot.sendCommandWithResponse(
         IotCommandClient.getImagingSettingsOptions,
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
       );
       if (output == null) return const CameraTimeout();
       final modes = output['ircut_filter_modes'];
       final wdrSupported = output['wdr_supported'];
       if (modes is! List || wdrSupported is! bool) {
-        return CameraFailure('GetImagingSettingsOptions response missing fields: $output');
+        return CameraFailure(
+          'GetImagingSettingsOptions response missing fields: $output',
+        );
       }
       return CameraSuccess((
         dayNightModes: modes.whereType<String>().toList(),

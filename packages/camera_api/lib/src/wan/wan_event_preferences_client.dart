@@ -6,18 +6,27 @@ import 'package:camera_api/camera_api.dart';
 /// [setEventPreferences]. No WAN "supported types" command — see `CapabilitiesClient`'s
 /// `supportedEventTypes`, LAN-only.
 class WanEventPreferencesClient {
-  WanEventPreferencesClient(String thingName, {IotCommandClient? iotCommandClient})
-    : _iot = iotCommandClient ?? IotCommandClient(thingName);
+  WanEventPreferencesClient(
+    String thingName, {
+    IotCommandClient? iotCommandClient,
+  }) : _iot = iotCommandClient ?? IotCommandClient(thingName);
 
   final IotCommandClient _iot;
 
   Future<CameraResult<Map<String, bool>>> getEventPreferences({
     Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
   }) async {
     try {
-      final output = await _iot.sendCommandWithResponse(IotCommandClient.getEventPreferences);
+      final output = await _iot.sendCommandWithResponse(
+        IotCommandClient.getEventPreferences,
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
+      );
       if (output == null) return const CameraTimeout();
-      return CameraSuccess(output.map((key, dynamic v) => MapEntry(key, v == true)));
+      return CameraSuccess(
+        output.map((key, dynamic v) => MapEntry(key, v == true)),
+      );
     } catch (e) {
       return CameraFailure(e.toString());
     }
@@ -28,11 +37,14 @@ class WanEventPreferencesClient {
   Future<CameraResult<void>> setEventPreferences(
     Map<String, bool> changes, {
     Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
   }) async {
     try {
       final output = await _iot.sendCommandWithResponse(
         IotCommandClient.setEventPreferences,
         params: changes,
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
       );
       if (output == null) return const CameraTimeout();
       return const CameraSuccess(null);

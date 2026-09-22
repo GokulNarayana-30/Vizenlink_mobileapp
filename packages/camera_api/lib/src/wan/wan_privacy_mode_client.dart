@@ -1,6 +1,5 @@
 import 'package:camera_api/camera_api.dart';
 
-
 /// WAN counterpart to `PrivacyModeClient` (`camera_api`'s LAN-only NuraEye client) —
 /// `SetPrivacyMode`/`GetPrivacyMode` (`FR-NE-093`, `FR-CF-138`) have been `Implemented` in
 /// firmware since `FEAT-024`'s wider deterrence work, but `_PrivacyModeCard`
@@ -17,16 +16,23 @@ class WanPrivacyModeClient {
 
   Future<CameraResult<PrivacyMode>> getPrivacyMode({
     Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
   }) async {
     try {
-      final output = await _iot.sendCommandWithResponse(IotCommandClient.getPrivacyMode);
+      final output = await _iot.sendCommandWithResponse(
+        IotCommandClient.getPrivacyMode,
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
+      );
       if (output == null) return const CameraTimeout();
       final modeStr = output['mode'];
       if (modeStr is! String) {
         return CameraFailure('GetPrivacyMode response missing mode: $output');
       }
       final mode = PrivacyModeWire.fromWire(modeStr);
-      if (mode == null) return CameraFailure('Unrecognized privacy mode: $modeStr');
+      if (mode == null) {
+        return CameraFailure('Unrecognized privacy mode: $modeStr');
+      }
       return CameraSuccess(mode);
     } catch (e) {
       return CameraFailure(e.toString());
@@ -36,11 +42,14 @@ class WanPrivacyModeClient {
   Future<CameraResult<void>> setPrivacyMode(
     PrivacyMode mode, {
     Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
   }) async {
     try {
       final output = await _iot.sendCommandWithResponse(
         IotCommandClient.setPrivacyMode,
         params: {'mode': mode.wireValue},
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
       );
       if (output == null) return const CameraTimeout();
       return const CameraSuccess(null);

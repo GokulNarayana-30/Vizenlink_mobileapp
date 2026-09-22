@@ -1,6 +1,5 @@
 import 'package:camera_api/camera_api.dart';
 
-
 /// WAN counterpart to `OsdClient` (`camera_api`'s LAN ONVIF Media client for the timestamp/
 /// camera-name OSD overlays) — `GetOsdConfigs`/`SetOsdConfig`/`DeleteOsdConfig`/`GetOsdOptions`
 /// (commands `45`-`48`), added for the 2026-08-05 options-parity audit
@@ -16,12 +15,19 @@ class WanOsdClient {
 
   Future<CameraResult<List<OsdEntry>>> getOsds({
     Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
   }) async {
     try {
-      final output = await _iot.sendCommandWithResponse(IotCommandClient.getOsdConfigs);
+      final output = await _iot.sendCommandWithResponse(
+        IotCommandClient.getOsdConfigs,
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
+      );
       if (output == null) return const CameraTimeout();
       final osds = output['osds'];
-      if (osds is! List) return CameraFailure('GetOsdConfigs response missing fields: $output');
+      if (osds is! List) {
+        return CameraFailure('GetOsdConfigs response missing fields: $output');
+      }
       final entries = <OsdEntry>[
         for (final o in osds)
           if (o is Map && o['token'] is String && o['text_type'] is String)
@@ -45,9 +51,14 @@ class WanOsdClient {
 
   Future<CameraResult<OsdOptions>> getOsdOptions({
     Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
   }) async {
     try {
-      final output = await _iot.sendCommandWithResponse(IotCommandClient.getOsdOptions);
+      final output = await _iot.sendCommandWithResponse(
+        IotCommandClient.getOsdOptions,
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
+      );
       if (output == null) return const CameraTimeout();
       final fontColors = output['font_colors'];
       if (fontColors is! List) {
@@ -62,7 +73,11 @@ class WanOsdClient {
           fontSizeMax: (output['font_size_max'] as num?)?.toInt() ?? 24,
           fontColors: [
             for (final c in fontColors)
-              if (c is Map && c['x'] is num && c['y'] is num && c['z'] is num && c['colorspace'] is String)
+              if (c is Map &&
+                  c['x'] is num &&
+                  c['y'] is num &&
+                  c['z'] is num &&
+                  c['colorspace'] is String)
                 OsdColor(
                   x: (c['x'] as num).toDouble(),
                   y: (c['y'] as num).toDouble(),
@@ -71,9 +86,15 @@ class WanOsdClient {
                 ),
           ],
           fontColorRangeAvailable: output['font_color_range_available'] == true,
-          positionTypes: positionTypes is List ? positionTypes.whereType<String>().toList() : const [],
-          dateFormats: dateFormats is List ? dateFormats.whereType<String>().toList() : const [],
-          timeFormats: timeFormats is List ? timeFormats.whereType<String>().toList() : const [],
+          positionTypes: positionTypes is List
+              ? positionTypes.whereType<String>().toList()
+              : const [],
+          dateFormats: dateFormats is List
+              ? dateFormats.whereType<String>().toList()
+              : const [],
+          timeFormats: timeFormats is List
+              ? timeFormats.whereType<String>().toList()
+              : const [],
         ),
       );
     } catch (e) {
@@ -82,7 +103,11 @@ class WanOsdClient {
   }
 
   OsdColor? _parseColor(dynamic c) {
-    if (c is! Map || c['x'] is! num || c['y'] is! num || c['z'] is! num || c['colorspace'] is! String) {
+    if (c is! Map ||
+        c['x'] is! num ||
+        c['y'] is! num ||
+        c['z'] is! num ||
+        c['colorspace'] is! String) {
       return null;
     }
     return OsdColor(
@@ -110,6 +135,7 @@ class WanOsdClient {
     String? timeFormat,
     OsdColor? fontColor,
     Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
   }) async {
     try {
       final output = await _iot.sendCommandWithResponse(
@@ -131,6 +157,8 @@ class WanOsdClient {
               'colorspace': fontColor.colorspace,
             },
         },
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
       );
       if (output == null) return const CameraTimeout();
       final resultToken = output['token'];
@@ -143,11 +171,14 @@ class WanOsdClient {
   Future<CameraResult<void>> deleteOsd(
     String token, {
     Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
   }) async {
     try {
       final output = await _iot.sendCommandWithResponse(
         IotCommandClient.deleteOsdConfig,
         params: {'token': token},
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
       );
       if (output == null) return const CameraTimeout();
       return const CameraSuccess(null);

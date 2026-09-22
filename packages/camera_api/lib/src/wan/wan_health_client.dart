@@ -11,10 +11,13 @@ class WanHealthClient {
 
   Future<CameraResult<HealthStatus>> getHealth({
     Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
   }) async {
     try {
       final output = await _iot.sendCommandWithResponse(
         IotCommandClient.getDeviceHealth,
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
       );
       if (output == null) return const CameraTimeout();
       final rebootCount = output['reboot_count'];
@@ -29,7 +32,9 @@ class WanHealthClient {
           clockSyncStateWire is! String ||
           uncertainSince is! int ||
           firmwareVersion is! String) {
-        return CameraFailure('GetDeviceHealth response missing fields: $output');
+        return CameraFailure(
+          'GetDeviceHealth response missing fields: $output',
+        );
       }
       final clockSyncState = clockSyncStateWire == 'uncertain'
           ? ClockSyncState.uncertain

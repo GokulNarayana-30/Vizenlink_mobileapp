@@ -686,8 +686,13 @@ class LiveViewController extends ChangeNotifier {
     // [RtspLiveViewProxy]'s own 1280x720 default already covers. The comment
     // that used to sit here called this "best-effort", which the `await` made
     // untrue. Kick discovery off unawaited so it's ready for the next connect.
+    // Refreshed in the background on every connect, not just the first:
+    // STREAMING_GUIDE.md §1 wants profiles re-read live before a reconnect
+    // rather than trusted from cache, since a stream's encoder config — and
+    // so its resolution and codec — can change while a session is down. Still
+    // never awaited, so it stays off the path to first frame.
     final profiles = _lanProfiles;
-    if (profiles == null) unawaited(loadLanProfiles());
+    unawaited(loadLanProfiles(forceRefresh: true));
     final matchedResolution = profiles
         ?.where((p) => p.token == _profileToken)
         .map((p) => p.resolution)

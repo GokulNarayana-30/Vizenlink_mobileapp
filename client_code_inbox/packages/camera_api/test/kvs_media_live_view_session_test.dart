@@ -206,6 +206,18 @@ void main() {
   test(
     'a client over the pending cap gets fewer bytes than an unconstrained one',
     () async {
+      // Dropping whole fragments must never leave a torn box in the stream the player reads.
+      bool boxAligned(List<int> b) {
+        var i = 0;
+        while (i + 8 <= b.length) {
+          final size =
+              (b[i] << 24) | (b[i + 1] << 16) | (b[i + 2] << 8) | b[i + 3];
+          if (size < 8) return false;
+          i += size;
+        }
+        return i == b.length;
+      }
+
       Future<int> run(int cap) async {
         final s = make(maxPending: cap);
         await s.start();
@@ -216,6 +228,7 @@ void main() {
         await done;
         await _pump(200);
         await s.stop();
+        expect(boxAligned(received), isTrue, reason: 'cap=$cap left a torn box');
         return received.length;
       }
 

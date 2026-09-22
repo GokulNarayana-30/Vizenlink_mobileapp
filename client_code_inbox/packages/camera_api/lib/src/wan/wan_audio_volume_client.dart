@@ -24,12 +24,21 @@ class WanAudioVolumeClient {
 
   final IotCommandClient _iot;
 
-  Future<CameraResult<int>> getMicGain({Duration timeout = const Duration(seconds: 15)}) async {
+  Future<CameraResult<int>> getMicGain({
+    Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
+  }) async {
     try {
-      final output = await _iot.sendCommandWithResponse(IotCommandClient.getMicGain);
+      final output = await _iot.sendCommandWithResponse(
+        IotCommandClient.getMicGain,
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
+      );
       if (output == null) return const CameraTimeout();
       final gain = output['gain'];
-      if (gain is! num) return CameraFailure('GetMicGain response missing gain: $output');
+      if (gain is! num) {
+        return CameraFailure('GetMicGain response missing gain: $output');
+      }
       return CameraSuccess(gain.toInt());
     } catch (e) {
       return CameraFailure(e.toString());
@@ -39,17 +48,30 @@ class WanAudioVolumeClient {
   Future<CameraResult<void>> setMicGain(
     int gain, {
     Duration timeout = const Duration(seconds: 15),
-  }) => _send(IotCommandClient.setMicGain, {'gain': gain});
+    bool retryOnTimeout = true,
+  }) => _send(
+    IotCommandClient.setMicGain,
+    {'gain': gain},
+    timeout,
+    retryOnTimeout,
+  );
 
   Future<CameraResult<bool>> isAudioRecordingEnabled({
     Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
   }) async {
     try {
-      final output = await _iot.sendCommandWithResponse(IotCommandClient.getAudioRecording);
+      final output = await _iot.sendCommandWithResponse(
+        IotCommandClient.getAudioRecording,
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
+      );
       if (output == null) return const CameraTimeout();
       final enabled = output['enabled'];
       if (enabled is! bool) {
-        return CameraFailure('GetAudioRecording response missing enabled: $output');
+        return CameraFailure(
+          'GetAudioRecording response missing enabled: $output',
+        );
       }
       return CameraSuccess(enabled);
     } catch (e) {
@@ -60,23 +82,40 @@ class WanAudioVolumeClient {
   Future<CameraResult<void>> setAudioRecordingEnabled(
     bool enabled, {
     Duration timeout = const Duration(seconds: 15),
-  }) => _send(IotCommandClient.setAudioRecording, {'enabled': enabled});
+    bool retryOnTimeout = true,
+  }) => _send(
+    IotCommandClient.setAudioRecording,
+    {'enabled': enabled},
+    timeout,
+    retryOnTimeout,
+  );
 
-  Future<CameraResult<void>> playTestSound({Duration timeout = const Duration(seconds: 15)}) =>
-      _sendNoParams(IotCommandClient.playTestSound);
+  Future<CameraResult<void>> playTestSound({
+    Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
+  }) => _sendNoParams(IotCommandClient.playTestSound, timeout, retryOnTimeout);
 
-  Future<CameraResult<void>> stopTestSound({Duration timeout = const Duration(seconds: 15)}) =>
-      _sendNoParams(IotCommandClient.stopTestSound);
+  Future<CameraResult<void>> stopTestSound({
+    Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
+  }) => _sendNoParams(IotCommandClient.stopTestSound, timeout, retryOnTimeout);
 
   Future<CameraResult<bool>> isTestSoundPlaying({
     Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
   }) async {
     try {
-      final output = await _iot.sendCommandWithResponse(IotCommandClient.getTestSoundStatus);
+      final output = await _iot.sendCommandWithResponse(
+        IotCommandClient.getTestSoundStatus,
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
+      );
       if (output == null) return const CameraTimeout();
       final playing = output['playing'];
       if (playing is! bool) {
-        return CameraFailure('GetTestSoundStatus response missing playing: $output');
+        return CameraFailure(
+          'GetTestSoundStatus response missing playing: $output',
+        );
       }
       return CameraSuccess(playing);
     } catch (e) {
@@ -84,9 +123,17 @@ class WanAudioVolumeClient {
     }
   }
 
-  Future<CameraResult<void>> _sendNoParams(int command) async {
+  Future<CameraResult<void>> _sendNoParams(
+    int command,
+    Duration timeout,
+    bool retryOnTimeout,
+  ) async {
     try {
-      final output = await _iot.sendCommandWithResponse(command);
+      final output = await _iot.sendCommandWithResponse(
+        command,
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
+      );
       if (output == null) return const CameraTimeout();
       return const CameraSuccess(null);
     } catch (e) {
@@ -94,9 +141,19 @@ class WanAudioVolumeClient {
     }
   }
 
-  Future<CameraResult<void>> _send(int command, Map<String, dynamic> params) async {
+  Future<CameraResult<void>> _send(
+    int command,
+    Map<String, dynamic> params,
+    Duration timeout,
+    bool retryOnTimeout,
+  ) async {
     try {
-      final output = await _iot.sendCommandWithResponse(command, params: params);
+      final output = await _iot.sendCommandWithResponse(
+        command,
+        params: params,
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
+      );
       if (output == null) return const CameraTimeout();
       return const CameraSuccess(null);
     } catch (e) {

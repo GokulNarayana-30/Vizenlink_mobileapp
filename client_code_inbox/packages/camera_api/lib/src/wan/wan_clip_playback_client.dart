@@ -41,6 +41,30 @@ class WanClipPlaybackClient {
   Future<CameraResult<void>> stop() =>
       _send(IotCommandClient.stopClipPlayback, timeoutSeconds: 20);
 
+  /// Refreshes the camera's idle-lease clock for the active session and reports whether one is
+  /// still active. The camera stops an unattended session after 30s with no heartbeat (mirrors
+  /// live view's own `GetCloudStreamingStatus` lease pattern) to avoid unbounded KVS PutMedia
+  /// billing from a vanished client -- callers must call this periodically (every ~10s) for as
+  /// long as a session is meant to stay open, the same cadence `LiveViewController` already uses
+  /// for its own WAN health poll.
+  Future<CameraResult<bool>> heartbeat() async {
+    try {
+      final output = await _iot.sendCommandWithResponse(
+        IotCommandClient.getClipPlaybackStatus,
+      );
+      if (output == null) return const CameraTimeout();
+      final active = output['active'];
+      if (active is! bool) {
+        return CameraFailure(
+          'GetClipPlaybackStatus response missing active: $output',
+        );
+      }
+      return CameraSuccess(active);
+    } catch (e) {
+      return CameraFailure(e.toString());
+    }
+  }
+
   Future<CameraResult<void>> _send(
     int command, {
     Map<String, dynamic>? params,

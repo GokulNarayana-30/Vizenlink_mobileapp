@@ -11,13 +11,20 @@ class WanBboxOverlayClient {
 
   Future<CameraResult<bool>> isBboxOverlayEnabled({
     Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
   }) async {
     try {
-      final output = await _iot.sendCommandWithResponse(IotCommandClient.getBboxOverlayEnabled);
+      final output = await _iot.sendCommandWithResponse(
+        IotCommandClient.getBboxOverlayEnabled,
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
+      );
       if (output == null) return const CameraTimeout();
       final enabled = output['enabled'];
       if (enabled is! bool) {
-        return CameraFailure('GetBboxOverlayEnabled response missing "enabled": $output');
+        return CameraFailure(
+          'GetBboxOverlayEnabled response missing "enabled": $output',
+        );
       }
       return CameraSuccess(enabled);
     } catch (e) {
@@ -28,11 +35,14 @@ class WanBboxOverlayClient {
   Future<CameraResult<void>> setBboxOverlayEnabled(
     bool enabled, {
     Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
   }) async {
     try {
       final output = await _iot.sendCommandWithResponse(
         IotCommandClient.setBboxOverlayEnabled,
         params: {'enabled': enabled},
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
       );
       if (output == null) return const CameraTimeout();
       return const CameraSuccess(null);

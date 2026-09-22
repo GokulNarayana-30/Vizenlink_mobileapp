@@ -1,6 +1,5 @@
 import 'package:camera_api/camera_api.dart';
 
-
 /// WAN counterpart to `MirrorFlipClient` (`camera_api`'s LAN-only NuraEye client) —
 /// `SetMirrorFlip`/`GetMirrorFlip` (`FR-NE-039`, commands `11`/`12`) have been `Implemented`
 /// and hardware-verified on both LAN and WAN in firmware since 2026-07-27
@@ -16,16 +15,23 @@ class WanMirrorFlipClient {
 
   Future<CameraResult<MirrorFlipMode>> getMirrorFlip({
     Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
   }) async {
     try {
-      final output = await _iot.sendCommandWithResponse(IotCommandClient.getMirrorFlip);
+      final output = await _iot.sendCommandWithResponse(
+        IotCommandClient.getMirrorFlip,
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
+      );
       if (output == null) return const CameraTimeout();
       final modeStr = output['mode'];
       if (modeStr is! String) {
         return CameraFailure('GetMirrorFlip response missing mode: $output');
       }
       final mode = MirrorFlipModeWire.fromWire(modeStr);
-      if (mode == null) return CameraFailure('Unrecognized mirror/flip mode: $modeStr');
+      if (mode == null) {
+        return CameraFailure('Unrecognized mirror/flip mode: $modeStr');
+      }
       return CameraSuccess(mode);
     } catch (e) {
       return CameraFailure(e.toString());
@@ -35,11 +41,14 @@ class WanMirrorFlipClient {
   Future<CameraResult<void>> setMirrorFlip(
     MirrorFlipMode mode, {
     Duration timeout = const Duration(seconds: 15),
+    bool retryOnTimeout = true,
   }) async {
     try {
       final output = await _iot.sendCommandWithResponse(
         IotCommandClient.setMirrorFlip,
         params: {'mode': mode.wireValue},
+        timeoutSeconds: timeout.inMilliseconds / 1000,
+        retryOnTimeout: retryOnTimeout,
       );
       if (output == null) return const CameraTimeout();
       return const CameraSuccess(null);

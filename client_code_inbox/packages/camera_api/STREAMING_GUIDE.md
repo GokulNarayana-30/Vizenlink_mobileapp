@@ -73,17 +73,18 @@ are ordinary ONVIF profiles, reachable via `GetStreamUri` too, `FR-CF-010`). Thi
 transports it can resolve, are **LAN-only by design** — there is no WAN counterpart and there
 never will be one for either.
 
-**This app's own live view always requests `Profile_3` and only `Profile_3`** — direct user
-instruction, 2026-09-08, after a real bug shipped the opposite: `LiveViewScreen`'s default
-`profileToken` was a bare `'Profile_1'` string literal, so live view was requesting the
-NVR/VMS-facing main stream instead of the stream actually built for this app. Fixed by
-introducing named constants (`kMobileOnlyStreamProfileToken` etc., `live_stream_uri_client.dart`)
-so the choice is self-documenting at every call site, and by collapsing `LiveViewScreen`'s
-FR-MOB-037 LAN-trouble-detection profile ladder (§10.8) down to a single rung — live view must
-never fall through to `Profile_1`/`Profile_2` under any circumstance, including sustained LAN
-trouble that ladder used to react to by switching ONVIF quality tiers. `Profile_1`/`Profile_2`
-remain real, valid profiles for ONVIF NVR/VMS clients (§1) — just never ones this app's own live
-view requests.
+**Which profile live view requests (revised 2026-09-11):** the app no longer pins `Profile_3`.
+`OnvifVideoEncoderClient.getProfiles()` returns every profile the camera has configured
+(token, name, resolution, backing encoder config) and the live-view screens build a **Stream
+Quality picker** from that list (`LIVE-058`/`LIVE-059`) — one chip per profile, labelled by its
+resolution (`resolutionLabel`, e.g. "4MP"/"2MP"/"720p"), plus an **Auto** choice that maps WiFi
+signal strength to a profile. Never hardcode "three streams": read the list and its length. The
+chosen profile's `token` is what goes in `profile_token` above. `getProfiles()` is always re-fetched
+live before a reconnect (never from the cache), because a stream's encoder config — and so its
+resolution/codec — can change while a session is down. The old rule "only ever `Profile_3`" (a
+2026-09-08 fix for a `LiveViewScreen` that requested the NVR-facing main stream by accident) is
+superseded: the fix that mattered was replacing a bare `'Profile_1'` literal with an explicit,
+user-visible choice.
 
 Branch on `output.transport`, not on any assumption about which one you'll get:
 - `"webrtc"`: `url` is **plain `http://`, not `https://`** — the signaling socket is
@@ -301,6 +302,32 @@ There is no "change quality" command — switching tiers means stopping the curr
 (`startCloudStreaming(newQuality)` → new token), same as a reconnect. See
 `LiveViewController.setWanQuality` for the reference implementation (tears down the old lease,
 re-runs the connect sequence above on the new tier).
+
+### Session resilience (`KvsMediaLiveViewSession`)
+
+The session keeps one continuous player-facing stream across `GetMedia` connection changes:
+- **Credential refresh.** The vended credentials are re-vended `credentialRefreshMargin` (default
+  60 s) before `expiration` and `GetMedia` is re-opened with them; the previous connection is
+  retired only after the new one is attached.
+- **Transparent re-establish.** If `GetMedia` ends (AWS connection cap, network drop) or errors,
+  the session reconnects with exponential backoff (`reconnectBackoff`, `maxReconnectAttempts`,
+  default 3). The muxer, init segment and connected loopback HTTP clients survive, so the player
+  sees no restart. Consecutive failures reset on the first sample received; only when they
+  exceed the cap (including connections that end without delivering any sample) does
+  `isSessionEnded` become true and the caller need to rebuild a session. `stop()` also sets it.
+- **Loopback backpressure.** Each HTTP client may have `maxPendingBytesPerClient` (default 2 MiB)
+  queued. Over that, audio and non-keyframe video fragments are dropped for that client, which
+  then waits for the next keyframe before receiving video again. Keyframes are never dropped.
+
+### WAN recorded-clip playback
+
+The same session plays recorded clips: `WanClipPlaybackClient` (commands 75–79) makes the camera
+stream a clip into the dedicated KVS stream `<thingName>-playback`
+(`wanClipPlaybackStreamName`), and `KvsMediaLiveViewSession(streamName: ...)` plays it.
+`WanRecordingsClient` (commands 80/81) lists dates and clips first. The camera gives no end-of-clip
+signal — treat a long silence in `lastSampleAt` as the end of the clip. One playback session
+camera-wide; seek and pause in the app are stop + restart at the new offset. Credentials for the
+`-playback` stream come from the same `mode=media` Lambda action.
 
 ## 4. What `stream_status` does and doesn't tell you
 
