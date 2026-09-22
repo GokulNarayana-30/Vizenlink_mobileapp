@@ -1,5 +1,7 @@
 import 'package:camera_api/camera_api.dart';
 
+import 'camera_network.dart';
+
 /// Process-lifetime, host-keyed cache for `Get*Options`-style capability
 /// responses — the "cache these at process lifetime, keyed by
 /// `CameraConnection.host`" convention (`.claude/rules/
@@ -87,13 +89,36 @@ class NetworkAnswerCache {
 /// failure mode before rewriting its own equivalent prefetch to be
 /// sequential).
 Future<void> prefetchAndCache(CameraConnection connection) async {
-  final imaging = OnvifImagingClient(connection);
-  final osd = OsdClient(connection);
-  final videoEncoder = OnvifVideoEncoderClient(connection);
-  final mask = MaskClient(connection);
+  final imaging = OnvifImagingClient(
+    connection,
+    httpClient: CameraNetwork.clientFor(connection.host),
+  );
+  final osd = OsdClient(
+    connection,
+    httpClient: CameraNetwork.clientFor(connection.host),
+    endpoint: CameraNetwork.media2EndpointFor(connection.host),
+  );
+  final videoEncoder = OnvifVideoEncoderClient(
+    connection,
+    httpClient: CameraNetwork.clientFor(connection.host),
+    endpoint: CameraNetwork.media2EndpointFor(connection.host),
+  );
+  final mask = MaskClient(
+    connection,
+    httpClient: CameraNetwork.clientFor(connection.host),
+    endpoint: CameraNetwork.media2EndpointFor(connection.host),
+  );
   final networkInfo = NetworkInfoClient(connection);
-  final audioCapability = AudioCapabilityClient(connection);
-  final speakerVolume = SpeakerVolumeClient(connection);
+  final audioCapability = AudioCapabilityClient(
+    connection,
+    httpClient: CameraNetwork.clientFor(connection.host),
+    endpoint: CameraNetwork.media2EndpointFor(connection.host),
+  );
+  final speakerVolume = SpeakerVolumeClient(
+    connection,
+    httpClient: CameraNetwork.clientFor(connection.host),
+    endpoint: CameraNetwork.media2EndpointFor(connection.host),
+  );
   try {
     await NetworkAnswerCache.getOrFetch(
       connection.host,
@@ -137,11 +162,28 @@ Future<void> prefetchAndCache(CameraConnection connection) async {
     await speakerVolume.getSpeakerVolume();
   } finally {
     imaging.close();
+    CameraNetwork.rememberMedia2Endpoint(connection.host, osd.resolvedEndpoint);
     osd.close();
+    CameraNetwork.rememberMedia2Endpoint(
+      connection.host,
+      videoEncoder.resolvedEndpoint,
+    );
     videoEncoder.close();
+    CameraNetwork.rememberMedia2Endpoint(
+      connection.host,
+      mask.resolvedEndpoint,
+    );
     mask.close();
     networkInfo.close();
+    CameraNetwork.rememberMedia2Endpoint(
+      connection.host,
+      audioCapability.resolvedEndpoint,
+    );
     audioCapability.close();
+    CameraNetwork.rememberMedia2Endpoint(
+      connection.host,
+      speakerVolume.resolvedEndpoint,
+    );
     speakerVolume.close();
   }
 }

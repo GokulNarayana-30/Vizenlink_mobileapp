@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:camera_api/camera_api.dart';
+
+import '../../app_state/camera_network.dart';
 import 'package:flutter/material.dart';
 
 import '../../app_state/camera_settings_cache.dart';
@@ -92,7 +94,10 @@ class _VideoModeScreenState extends State<VideoModeScreen> {
     final connection = _camera.connection;
     if (connection == null) return;
     setState(() => _isLoading = true);
-    final client = OnvifImagingClient(connection);
+    final client = OnvifImagingClient(
+      connection,
+      httpClient: CameraNetwork.clientFor(connection.host),
+    );
     final results = await Future.wait([
       client.getImagingSettings(),
       NetworkAnswerCache.getOrFetch(
@@ -234,7 +239,10 @@ class _VideoModeScreenState extends State<VideoModeScreen> {
         camera: _camera,
         thingName: thingName,
         lan: () async {
-          final client = OnvifImagingClient(connection);
+          final client = OnvifImagingClient(
+            connection,
+            httpClient: CameraNetwork.clientFor(connection.host),
+          );
           final result = await client.setImagingSettings(
             ImagingSettings(irCutFilterMode: _videoModeToIrCutFilter(_mode)),
           );

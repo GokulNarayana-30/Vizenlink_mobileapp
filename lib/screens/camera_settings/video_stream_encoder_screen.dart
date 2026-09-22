@@ -1,4 +1,6 @@
 import 'package:camera_api/camera_api.dart';
+
+import '../../app_state/camera_network.dart';
 import 'package:flutter/material.dart';
 
 import '../../app_state/camera_settings_cache.dart';
@@ -144,7 +146,11 @@ class _VideoStreamEncoderScreenState extends State<VideoStreamEncoderScreen> {
     final connection = _camera.connection;
     if (connection == null) return;
     final configToken = _configTokenFor(widget.stream);
-    final client = OnvifVideoEncoderClient(connection);
+    final client = OnvifVideoEncoderClient(
+      connection,
+      httpClient: CameraNetwork.clientFor(connection.host),
+      endpoint: CameraNetwork.media2EndpointFor(connection.host),
+    );
     final results = await Future.wait([
       client.getVideoEncoderSettings(configToken: configToken),
       NetworkAnswerCache.getOrFetch(
@@ -154,6 +160,10 @@ class _VideoStreamEncoderScreenState extends State<VideoStreamEncoderScreen> {
             client.getVideoEncoderSettingsOptions(configToken: configToken),
       ),
     ]);
+    CameraNetwork.rememberMedia2Endpoint(
+      connection.host,
+      client.resolvedEndpoint,
+    );
     client.close();
 
     var settingsResult = results[0] as CameraResult<VideoEncoderSettings>;
@@ -238,7 +248,11 @@ class _VideoStreamEncoderScreenState extends State<VideoStreamEncoderScreen> {
     final bool succeeded;
     if (connection != null) {
       final configToken = _configTokenFor(widget.stream);
-      final client = OnvifVideoEncoderClient(connection);
+      final client = OnvifVideoEncoderClient(
+        connection,
+        httpClient: CameraNetwork.clientFor(connection.host),
+        endpoint: CameraNetwork.media2EndpointFor(connection.host),
+      );
       // The picked value is already the camera's own pixel pair — no
       // reverse lookup from a bucketed enum needed any more.
       final width = _config.resolution.width;
@@ -261,6 +275,10 @@ class _VideoStreamEncoderScreenState extends State<VideoStreamEncoderScreen> {
       if (!preferWan) {
         result = await client.setVideoEncoderSettings(settings);
       }
+      CameraNetwork.rememberMedia2Endpoint(
+        connection.host,
+        client.resolvedEndpoint,
+      );
       client.close();
 
       if (result is CameraSuccess) {

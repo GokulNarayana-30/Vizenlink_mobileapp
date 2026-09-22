@@ -4,6 +4,8 @@ import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:camera_api/camera_api.dart';
+
+import '../../app_state/camera_network.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -244,8 +246,16 @@ class _CameraLiveScreenState extends State<CameraLiveScreen>
   Future<void> _loadAudioCapability() async {
     final connection = widget.camera.connection;
     if (connection == null) return;
-    final client = AudioCapabilityClient(connection);
+    final client = AudioCapabilityClient(
+      connection,
+      httpClient: CameraNetwork.clientFor(connection.host),
+      endpoint: CameraNetwork.media2EndpointFor(connection.host),
+    );
     final result = await client.getAudioCapability();
+    CameraNetwork.rememberMedia2Endpoint(
+      connection.host,
+      client.resolvedEndpoint,
+    );
     client.close();
     if (!mounted) return;
     if (result case CameraSuccess(:final value)) {
@@ -336,7 +346,10 @@ class _CameraLiveScreenState extends State<CameraLiveScreen>
     // server can stall for seconds under a burst of concurrent requests
     // (same reasoning as `camera_settings_cache.dart`'s prefetch).
     final nuraeye = NuraeyeClient(connection);
-    final imagingClient = OnvifImagingClient(connection);
+    final imagingClient = OnvifImagingClient(
+      connection,
+      httpClient: CameraNetwork.clientFor(connection.host),
+    );
     final privacyResult = await PrivacyModeClient(nuraeye).getPrivacyMode();
     final imagingResult = await imagingClient.getImagingSettings();
     final statusResult = await DeterrenceClient(nuraeye).getDeterrenceStatus();
@@ -380,8 +393,16 @@ class _CameraLiveScreenState extends State<CameraLiveScreen>
   Future<void> _loadRealBitrate() async {
     final connection = widget.camera.connection;
     if (connection == null) return;
-    final client = OnvifVideoEncoderClient(connection);
+    final client = OnvifVideoEncoderClient(
+      connection,
+      httpClient: CameraNetwork.clientFor(connection.host),
+      endpoint: CameraNetwork.media2EndpointFor(connection.host),
+    );
     var result = await client.getVideoEncoderSettings();
+    CameraNetwork.rememberMedia2Endpoint(
+      connection.host,
+      client.resolvedEndpoint,
+    );
     client.close();
 
     final thingName = connection.thingName;
@@ -1420,7 +1441,10 @@ class _CameraLiveScreenState extends State<CameraLiveScreen>
     final connection = camera.connection;
     final bool succeeded;
     if (connection != null) {
-      final client = OnvifImagingClient(connection);
+      final client = OnvifImagingClient(
+        connection,
+        httpClient: CameraNetwork.clientFor(connection.host),
+      );
       var result = await client.setImagingSettings(
         ImagingSettings(irCutFilterMode: _videoModeToIrCutFilter(next)),
       );

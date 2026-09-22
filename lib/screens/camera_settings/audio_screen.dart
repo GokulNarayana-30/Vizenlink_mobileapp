@@ -1,4 +1,6 @@
 import 'package:camera_api/camera_api.dart';
+
+import '../../app_state/camera_network.dart';
 import 'package:flutter/material.dart';
 
 import '../../app_state/homes_controller.dart';
@@ -90,8 +92,16 @@ class _AudioScreenState extends State<AudioScreen> {
     if (connection == null) return;
 
     setState(() => _isLoading = true);
-    final capabilityClient = AudioCapabilityClient(connection);
+    final capabilityClient = AudioCapabilityClient(
+      connection,
+      httpClient: CameraNetwork.clientFor(connection.host),
+      endpoint: CameraNetwork.media2EndpointFor(connection.host),
+    );
     final capabilityResult = await capabilityClient.getAudioCapability();
+    CameraNetwork.rememberMedia2Endpoint(
+      connection.host,
+      capabilityClient.resolvedEndpoint,
+    );
     capabilityClient.close();
     if (!mounted) return;
 
@@ -177,8 +187,16 @@ class _AudioScreenState extends State<AudioScreen> {
     final preferWan = widget.camera.lastKnownWan == true && thingName != null;
 
     if (!preferWan) {
-      final speakerClient = SpeakerVolumeClient(connection);
+      final speakerClient = SpeakerVolumeClient(
+        connection,
+        httpClient: CameraNetwork.clientFor(connection.host),
+        endpoint: CameraNetwork.media2EndpointFor(connection.host),
+      );
       final result = await speakerClient.getSpeakerVolume();
+      CameraNetwork.rememberMedia2Endpoint(
+        connection.host,
+        speakerClient.resolvedEndpoint,
+      );
       speakerClient.close();
 
       if (result case CameraSuccess<SpeakerVolume>(:final value)) {
@@ -290,9 +308,17 @@ class _AudioScreenState extends State<AudioScreen> {
         final speakerConfig = _speakerVolumeConfig;
         final CameraResult<void> speakerResult;
         if (!preferWan && speakerConfig != null) {
-          final speakerClient = SpeakerVolumeClient(connection);
+          final speakerClient = SpeakerVolumeClient(
+            connection,
+            httpClient: CameraNetwork.clientFor(connection.host),
+            endpoint: CameraNetwork.media2EndpointFor(connection.host),
+          );
           var result = await speakerClient.setSpeakerVolume(
             speakerConfig.withLevel(_speakerVolume.round()),
+          );
+          CameraNetwork.rememberMedia2Endpoint(
+            connection.host,
+            speakerClient.resolvedEndpoint,
           );
           speakerClient.close();
           if (result is! CameraSuccess && thingName != null) {

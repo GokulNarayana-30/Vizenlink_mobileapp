@@ -3,6 +3,8 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:camera_api/camera_api.dart';
+
+import 'camera_network.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../models/camera.dart';
@@ -55,7 +57,10 @@ Future<List<String>> syncCameraFromDevice({
   required String cameraId,
   required CameraConnection connection,
 }) async {
-  final device = OnvifDeviceClient(connection);
+  final device = OnvifDeviceClient(
+    connection,
+    httpClient: CameraNetwork.clientFor(connection.host),
+  );
   final nuraeye = NuraeyeClient(connection);
   try {
     // Known WAN (Camera.lastKnownWan) skips even the cheap probe below —

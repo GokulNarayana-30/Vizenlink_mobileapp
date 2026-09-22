@@ -1,4 +1,6 @@
 import 'package:camera_api/camera_api.dart';
+
+import '../../app_state/camera_network.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
@@ -238,7 +240,10 @@ class _CameraInfoScreenState extends State<CameraInfoScreen> {
           camera: _camera,
           thingName: wanEligible ? wanThingName : null,
           lan: () async {
-            final client = OnvifDeviceClient(connection);
+            final client = OnvifDeviceClient(
+              connection,
+              httpClient: CameraNetwork.clientFor(connection.host),
+            );
             final result = await client.setDeviceName(newName);
             client.close();
             return result;
@@ -281,7 +286,10 @@ class _CameraInfoScreenState extends State<CameraInfoScreen> {
           camera: _camera,
           thingName: wanEligible ? wanThingName : null,
           lan: () async {
-            final client = OnvifDeviceClient(connection);
+            final client = OnvifDeviceClient(
+              connection,
+              httpClient: CameraNetwork.clientFor(connection.host),
+            );
             final result = await client.setDeviceLocation(newLocation);
             client.close();
             return result;
@@ -334,7 +342,10 @@ class _CameraInfoScreenState extends State<CameraInfoScreen> {
           camera: _camera,
           thingName: wanEligible ? wanThingName : null,
           lan: () async {
-            final client = OnvifDeviceClient(connection);
+            final client = OnvifDeviceClient(
+              connection,
+              httpClient: CameraNetwork.clientFor(connection.host),
+            );
             final result = await client.setTimeZone(_timezone);
             client.close();
             return result;
@@ -1024,7 +1035,10 @@ class _ModifyPasswordDialogState extends State<_ModifyPasswordDialog> {
       camera: widget.camera,
       thingName: thingName,
       lan: () async {
-        final lanClient = OnvifDeviceClient(connection);
+        final lanClient = OnvifDeviceClient(
+          connection,
+          httpClient: CameraNetwork.clientFor(connection.host),
+        );
         final result = await lanClient.setUserPassword(
           connection.username,
           newPassword,

@@ -1,4 +1,6 @@
 import 'package:camera_api/camera_api.dart';
+
+import '../../app_state/camera_network.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:wifi_scan/wifi_scan.dart';
@@ -110,7 +112,10 @@ class _WifiConfigScreenState extends State<WifiConfigScreen> {
       return;
     }
 
-    final device = OnvifDeviceClient(connection);
+    final device = OnvifDeviceClient(
+      connection,
+      httpClient: CameraNetwork.clientFor(connection.host),
+    );
     final netResult = await device.getNetworkInterfaceInfo();
     device.close();
     final isWireless = switch (netResult) {

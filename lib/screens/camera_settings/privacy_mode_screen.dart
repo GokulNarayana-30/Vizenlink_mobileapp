@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:camera_api/camera_api.dart';
+
+import '../../app_state/camera_network.dart';
 import 'package:flutter/material.dart';
 
 import '../../app_state/camera_settings_cache.dart';
@@ -144,7 +146,11 @@ class CameraPrivacyModeScreenState extends State<PrivacyModeScreen> {
     if (connection == null) return;
     setState(() => _isLoading = true);
     final nuraeye = NuraeyeClient(connection);
-    final maskClient = MaskClient(connection);
+    final maskClient = MaskClient(
+      connection,
+      httpClient: CameraNetwork.clientFor(connection.host),
+      endpoint: CameraNetwork.media2EndpointFor(connection.host),
+    );
     final thingName = connection.thingName;
     // Skips the LAN mode/masks attempt entirely when this camera's last
     // confirmed transport was WAN — see Camera.lastKnownWan's doc. Options
@@ -179,6 +185,10 @@ class CameraPrivacyModeScreenState extends State<PrivacyModeScreen> {
       optionsResult = results[2] as CameraResult<MaskOptions>;
     }
     nuraeye.close();
+    CameraNetwork.rememberMedia2Endpoint(
+      connection.host,
+      maskClient.resolvedEndpoint,
+    );
     maskClient.close();
 
     // Options are LAN-only on a normal load (see this class's doc comment)
@@ -400,7 +410,11 @@ class CameraPrivacyModeScreenState extends State<PrivacyModeScreen> {
         ).setPrivacyMode(_toWirePrivacyMode(_mode)),
       );
 
-      final maskClient = MaskClient(connection);
+      final maskClient = MaskClient(
+        connection,
+        httpClient: CameraNetwork.clientFor(connection.host),
+        endpoint: CameraNetwork.media2EndpointFor(connection.host),
+      );
       final wanMaskClient = thingName != null ? WanMaskClient(thingName) : null;
       // Skips each LAN mask attempt below entirely when this camera's last
       // confirmed transport was WAN — see Camera.lastKnownWan's doc.
@@ -485,6 +499,10 @@ class CameraPrivacyModeScreenState extends State<PrivacyModeScreen> {
           }
         }
       }
+      CameraNetwork.rememberMedia2Endpoint(
+        connection.host,
+        maskClient.resolvedEndpoint,
+      );
       maskClient.close();
 
       succeeded = modeResult is CameraSuccess && masksOk;

@@ -1,4 +1,6 @@
 import 'package:camera_api/camera_api.dart';
+
+import '../../app_state/camera_network.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
@@ -83,8 +85,16 @@ class _VideoEncoderScreenState extends State<VideoEncoderScreen> {
   Future<void> _loadProfiles() async {
     final connection = widget.camera.connection;
     if (connection == null) return;
-    final client = OnvifVideoEncoderClient(connection);
+    final client = OnvifVideoEncoderClient(
+      connection,
+      httpClient: CameraNetwork.clientFor(connection.host),
+      endpoint: CameraNetwork.media2EndpointFor(connection.host),
+    );
     final result = await client.getProfiles();
+    CameraNetwork.rememberMedia2Endpoint(
+      connection.host,
+      client.resolvedEndpoint,
+    );
     client.close();
     if (!mounted || result is! CameraSuccess<List<MediaProfile>>) return;
     final reported = {for (final p in result.value) p.videoEncoderConfigToken};

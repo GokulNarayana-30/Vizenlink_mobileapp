@@ -25,15 +25,28 @@ Re-fetching it before every mutating call (e.g. resolving `GetServices` fresh be
 burst of requests can visibly stall other things talking to the same camera (e.g. RTSP/NVR
 viewers) while it's in flight.
 
-**Cache these at process lifetime, keyed by `CameraConnection.host` — a `static` map on the
-`camera_api` client class, not an instance field.** An instance-level cache isn't enough if the
-consuming widget constructs a fresh client instance every time its screen mounts — a `static` map
-survives across instances for the life of the app process, which is what "cache it" has to mean
-here. `packages/camera_api/lib/src/lan/onvif/mask_client.dart` already implements this pattern
-(`_endpointCacheByHost`, `_optionsCacheByHost`, `getMaskOptions({forceRefresh})`,
-`debugClearCaches()`) — use it as the reference shape for any other client that resolves a
-service endpoint, fetches an options/capabilities response, or performs a create/update/delete
-mutation:
+**Cache these at process lifetime, keyed by `CameraConnection.host` — in the app layer, not in
+the `camera_api` client.** An instance-level cache isn't enough if the consuming widget
+constructs a fresh client instance every time its screen mounts (and these screens construct one
+per load *and* per Apply), so the cache has to survive across instances for the life of the app
+process.
+
+**This used to live inside the clients as `static` maps** (`MaskClient._endpointCacheByHost`/
+`_optionsCacheByHost`). The 2026-09-07 `camera_api` drop deliberately removed that — the package
+is now a pure network client with no caching of its own — so **those identifiers no longer exist
+anywhere in the package** and must not be used as a reference. The app layer owns all three
+halves now:
+
+- `lib/app_state/camera_settings_cache.dart`'s `NetworkAnswerCache` — `Get*Options` **values**.
+- `lib/app_state/camera_network.dart`'s `CameraNetwork` — the pooled **HTTPS connection** and the
+  resolved **ONVIF Media2 endpoint**, both keyed by host. Every ONVIF client takes `httpClient:`
+  and (for the five Media2 clients) `endpoint:`; **always pass both**. Omitting them costs two
+  fresh TLS handshakes plus a `GetServices` round trip on every single operation, because each
+  client builds its own `HttpClient` *and* nests an `OnvifDeviceClient` that builds another, and
+  caches its resolved endpoint for its own instance lifetime only.
+
+Use those two as the reference shape for any client that resolves a service endpoint, fetches an
+options/capabilities response, or performs a create/update/delete mutation:
 
 - Resolve `GetServices` once per camera host and reuse it for every subsequent call any client
   instance for that host makes.

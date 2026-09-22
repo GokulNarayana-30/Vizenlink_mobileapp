@@ -4,6 +4,8 @@ import 'dart:io' show Platform;
 
 import 'package:alerts_api/alerts_api.dart';
 import 'package:camera_api/camera_api.dart';
+
+import 'camera_network.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:http/http.dart' as http;
@@ -197,8 +199,16 @@ class LiveViewController extends ChangeNotifier {
     bool forceRefresh = false,
   }) async {
     if (_lanProfiles != null && !forceRefresh) return _lanProfiles;
-    final client = OnvifVideoEncoderClient(connection);
+    final client = OnvifVideoEncoderClient(
+      connection,
+      httpClient: CameraNetwork.clientFor(connection.host),
+      endpoint: CameraNetwork.media2EndpointFor(connection.host),
+    );
     final result = await client.getProfiles();
+    CameraNetwork.rememberMedia2Endpoint(
+      connection.host,
+      client.resolvedEndpoint,
+    );
     client.close();
     debugPrint('[LiveView] getProfiles() -> $result');
     if (_disposed) return _lanProfiles;
@@ -669,10 +679,15 @@ class LiveViewController extends ChangeNotifier {
   /// checking [lanRtspVideoController] rather than transport alone. Tears
   /// down its own proxy on any failure before returning false.
   Future<bool> _connectRtsp(LiveStreamTarget target) async {
-    // Best-effort — a camera unreachable for this alone shouldn't block the
-    // RTSP connection itself; [RtspLiveViewProxy]'s own 1280x720 default
-    // covers the "couldn't discover profiles" case.
-    final profiles = _lanProfiles ?? await loadLanProfiles();
+    // Only use profiles that are *already* discovered — never await discovery
+    // here. `loadLanProfiles()` is GetServices + GetProfiles over TLS, and
+    // awaiting it put those round trips between the user tapping Live and the
+    // first frame, purely to pick a fallback resolution that
+    // [RtspLiveViewProxy]'s own 1280x720 default already covers. The comment
+    // that used to sit here called this "best-effort", which the `await` made
+    // untrue. Kick discovery off unawaited so it's ready for the next connect.
+    final profiles = _lanProfiles;
+    if (profiles == null) unawaited(loadLanProfiles());
     final matchedResolution = profiles
         ?.where((p) => p.token == _profileToken)
         .map((p) => p.resolution)

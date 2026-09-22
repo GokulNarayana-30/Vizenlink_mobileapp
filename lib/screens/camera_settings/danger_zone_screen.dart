@@ -1,4 +1,6 @@
 import 'package:camera_api/camera_api.dart';
+
+import '../../app_state/camera_network.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
@@ -96,7 +98,10 @@ class _DangerZoneScreenState extends State<DangerZoneScreen> {
       final preferWan = widget.camera.lastKnownWan == true && thingName != null;
       var ok = false;
       if (!preferWan) {
-        final client = OnvifDeviceClient(connection);
+        final client = OnvifDeviceClient(
+          connection,
+          httpClient: CameraNetwork.clientFor(connection.host),
+        );
         final result = await client.reboot();
         client.close();
         ok = result is CameraSuccess;
@@ -145,7 +150,10 @@ class _DangerZoneScreenState extends State<DangerZoneScreen> {
         camera: widget.camera,
         thingName: thingName,
         lan: () async {
-          final client = OnvifDeviceClient(connection);
+          final client = OnvifDeviceClient(
+            connection,
+            httpClient: CameraNetwork.clientFor(connection.host),
+          );
           final result = await client.factoryReset(mode);
           client.close();
           return result;

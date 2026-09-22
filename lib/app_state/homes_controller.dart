@@ -6,6 +6,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/camera.dart';
+import 'camera_network.dart';
 import '../models/home.dart';
 import 'camera_credentials_store.dart';
 import 'camera_settings_cache.dart';
@@ -716,7 +717,10 @@ class HomesController extends ValueNotifier<HomesState> {
     ];
     value = value.copyWith(homes: updated);
     unawaited(_credentialsStore.deletePassword(cameraId));
-    if (removedHost != null) NetworkAnswerCache.clearForHost(removedHost);
+    if (removedHost != null) {
+      NetworkAnswerCache.clearForHost(removedHost);
+      CameraNetwork.evictHost(removedHost);
+    }
   }
 
   void reorderCameras(String homeId, int oldIndex, int newIndex) {

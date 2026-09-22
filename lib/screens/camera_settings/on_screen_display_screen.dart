@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:camera_api/camera_api.dart';
+
+import '../../app_state/camera_network.dart';
 import 'package:flutter/material.dart';
 
 import '../../app_state/camera_settings_cache.dart';
@@ -407,8 +409,15 @@ class _OnScreenDisplayScreenState extends State<OnScreenDisplayScreen> {
   Future<void> _loadRealOsd() async {
     final connection = _camera.connection;
     if (connection == null) return;
-    final client = OsdClient(connection);
-    final capabilitiesClient = Media2CapabilitiesClient(connection);
+    final client = OsdClient(
+      connection,
+      httpClient: CameraNetwork.clientFor(connection.host),
+      endpoint: CameraNetwork.media2EndpointFor(connection.host),
+    );
+    final capabilitiesClient = Media2CapabilitiesClient(
+      connection,
+      httpClient: CameraNetwork.clientFor(connection.host),
+    );
     final results = await Future.wait([
       client.getOsds(),
       NetworkAnswerCache.getOrFetch(
@@ -418,6 +427,10 @@ class _OnScreenDisplayScreenState extends State<OnScreenDisplayScreen> {
       ),
       capabilitiesClient.getServiceCapabilities(),
     ]);
+    CameraNetwork.rememberMedia2Endpoint(
+      connection.host,
+      client.resolvedEndpoint,
+    );
     client.close();
     capabilitiesClient.close();
 
@@ -580,7 +593,11 @@ class _OnScreenDisplayScreenState extends State<OnScreenDisplayScreen> {
     };
 
     if (connection != null) {
-      final client = OsdClient(connection);
+      final client = OsdClient(
+        connection,
+        httpClient: CameraNetwork.clientFor(connection.host),
+        endpoint: CameraNetwork.media2EndpointFor(connection.host),
+      );
       final thingName = connection.thingName;
       final wanClient = thingName != null ? WanOsdClient(thingName) : null;
       // Skips each LAN attempt below entirely when this camera's last
@@ -753,6 +770,10 @@ class _OnScreenDisplayScreenState extends State<OnScreenDisplayScreen> {
         }
       }
 
+      CameraNetwork.rememberMedia2Endpoint(
+        connection.host,
+        client.resolvedEndpoint,
+      );
       client.close();
       succeeded = failures.isEmpty;
     } else {

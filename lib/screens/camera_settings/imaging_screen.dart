@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:camera_api/camera_api.dart';
+
+import '../../app_state/camera_network.dart';
 import 'package:flutter/material.dart';
 
 import '../../app_state/camera_settings_cache.dart';
@@ -269,7 +271,10 @@ class _ImagingScreenState extends State<ImagingScreen> {
   Future<void> _loadRealImaging() async {
     final connection = _camera.connection;
     if (connection == null) return;
-    final imagingClient = OnvifImagingClient(connection);
+    final imagingClient = OnvifImagingClient(
+      connection,
+      httpClient: CameraNetwork.clientFor(connection.host),
+    );
     final nuraeye = NuraeyeClient(connection);
 
     // Known WAN (Camera.lastKnownWan) skips even the cheap probe below —
@@ -567,7 +572,10 @@ class _ImagingScreenState extends State<ImagingScreen> {
       if (qualityChanged) {
         CameraResult<void>? imagingResult;
         if (!preferWan) {
-          final imagingClient = OnvifImagingClient(connection);
+          final imagingClient = OnvifImagingClient(
+            connection,
+            httpClient: CameraNetwork.clientFor(connection.host),
+          );
           imagingResult = await imagingClient.setImagingSettings(
             ImagingSettings(
               brightness: _brightness,
