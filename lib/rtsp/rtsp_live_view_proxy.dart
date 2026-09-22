@@ -101,12 +101,38 @@ class RtspLiveViewProxy {
         'DESCRIBE succeeded but no SPS/PPS was parsed from the SDP',
       );
     }
+    final isHevc = _rtsp!.videoCodec == VideoCodec.h265;
+    if (isHevc && _rtsp!.vps == null) {
+      // H.265's VPS is never advertised in this camera's SDP — it only
+      // arrives in-band, so the RTP read loop has to be running to see it.
+      // Start it early, ahead of the usual startReading() below. Deliberately
+      // does NOT attach _accessUnitSub yet: `accessUnits` is a broadcast
+      // controller that drops adds when nothing is listening, which is what we
+      // want here — any access unit arriving during this wait is one no HTTP
+      // client could have received anyway (the local server isn't bound yet),
+      // and it keeps _accessUnitCount == 0's forced-keyframe override landing
+      // on the first unit the real listener actually processes.
+      _rtsp!.startReading();
+      final deadline = DateTime.now().add(const Duration(seconds: 10));
+      while (_rtsp!.vps == null && DateTime.now().isBefore(deadline)) {
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
+      if (_rtsp!.vps == null) {
+        await _rtsp!.close();
+        throw RtspLiveViewException(
+          'H.265 stream but no in-band VPS was captured within 10s',
+        );
+      }
+    }
+
     final dims = _parseSpsDimensions(sps) ?? fallbackResolution;
     final muxer = RtspFmp4Muxer(
       sps: sps,
       pps: pps,
       width: dims.width,
       height: dims.height,
+      videoCodec: _rtsp!.videoCodec,
+      vps: isHevc ? _rtsp!.vps : null,
       audioSpecificConfig: _rtsp!.hasAudio ? _rtsp!.audioSpecificConfig : null,
       audioSampleRate: _rtsp!.hasAudio ? _rtsp!.audioSampleRate : null,
       audioChannelCount: _rtsp!.hasAudio ? _rtsp!.audioChannelCount : null,
@@ -119,6 +145,7 @@ class RtspLiveViewProxy {
     url = Uri.parse('http://127.0.0.1:${_server!.port}/live.mp4');
     debugPrint(
       '[RtspLiveViewProxy] loopback server bound at $url, dims=${dims.width}x${dims.height}, '
+      'codec=${_rtsp!.videoCodec}, '
       'audio=${muxer.hasAudioTrack ? '${_rtsp!.audioSampleRate}Hz/${_rtsp!.audioChannelCount}ch' : 'none'}',
     );
     unawaited(_serveHttp());
