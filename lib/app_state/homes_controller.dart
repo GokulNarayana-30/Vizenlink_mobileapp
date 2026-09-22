@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/camera.dart';
 import 'camera_network.dart';
+import 'transport_preference.dart';
 import '../models/home.dart';
 import 'camera_credentials_store.dart';
 import 'camera_settings_cache.dart';
@@ -694,11 +695,13 @@ class HomesController extends ValueNotifier<HomesState> {
     // same IP) gets re-added later, possibly with different firmware/
     // capabilities.
     String? removedHost;
+    String? removedThingName;
     for (final home in value.homes) {
       if (home.id != homeId) continue;
       for (final camera in home.cameras) {
         if (camera.id == cameraId) {
           removedHost = camera.connection?.host;
+          removedThingName = camera.connection?.thingName;
           break;
         }
       }
@@ -721,6 +724,7 @@ class HomesController extends ValueNotifier<HomesState> {
       NetworkAnswerCache.clearForHost(removedHost);
       CameraNetwork.evictHost(removedHost);
     }
+    if (removedThingName != null) forgetLearnedTransport(removedThingName);
   }
 
   void reorderCameras(String homeId, int oldIndex, int newIndex) {

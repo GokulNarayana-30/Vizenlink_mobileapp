@@ -6,6 +6,7 @@ import 'package:alerts_api/alerts_api.dart';
 import 'package:camera_api/camera_api.dart';
 
 import 'camera_network.dart';
+import 'transport_preference.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:http/http.dart' as http;
@@ -659,6 +660,9 @@ class LiveViewController extends ChangeNotifier {
     } finally {
       nuraeye.close();
     }
+    // Hand this free answer to the settings layer so it never has to discover
+    // the transport by wasting a real call's timeout on it.
+    recordTransportFromProbe(connection.thingName, reachableOnLan: reachable);
     if (_disposed) return false;
 
     if (reachable) {
@@ -1619,6 +1623,10 @@ class LiveViewController extends ChangeNotifier {
       } finally {
         nuraeye.close();
       }
+      recordTransportFromProbe(
+        connection.thingName,
+        reachableOnLan: reachableOnLan,
+      );
       if (_disposed || transport != LiveViewTransport.wan) return;
       if (reachableOnLan) {
         unawaited(_reconnect(preferLan: true));

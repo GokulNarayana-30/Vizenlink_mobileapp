@@ -9,6 +9,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../models/camera.dart';
 import 'homes_controller.dart';
+import 'transport_preference.dart';
 import 'preview_key_store.dart';
 
 /// Fetches [cameraId]'s live device information, network interface, and WAN
@@ -70,6 +71,12 @@ Future<List<String>> syncCameraFromDevice({
     final lanReachable = knownWan == true
         ? false
         : await LiveStreamUriClient(nuraeye).checkReachable();
+    // Free answer — record it so settings screens never rediscover the
+    // transport by spending a real call's timeout on it.
+    recordTransportFromProbe(
+      connection.thingName,
+      reachableOnLan: lanReachable,
+    );
 
     final CameraResult<DeviceInformation> infoResult;
     final CameraResult<DeviceIdentity> identityResult;
@@ -493,6 +500,10 @@ Future<void> pingCameraReachability({
       } finally {
         nuraeye.close();
       }
+      recordTransportFromProbe(
+        connection.thingName,
+        reachableOnLan: reachable == true,
+      );
     }
 
     if (reachable == true) {

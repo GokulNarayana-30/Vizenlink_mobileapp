@@ -338,6 +338,13 @@ class _MobileCctvAppState extends State<MobileCctvApp>
           ),
           branches: [
             StatefulShellBranch(
+              // Each branch has its own Navigator, and the router-level
+              // `observers` above only watches the ROOT one — so without this,
+              // pushing a sub-screen (Camera Settings on top of Camera Live)
+              // never reaches `routeObserver`, and RouteAware's didPushNext/
+              // didPopNext never fire. That left live view streaming in the
+              // background the whole time a settings screen was open.
+              observers: [routeObserver],
               routes: [
                 GoRoute(
                   path: DashboardScreen.routeName,
@@ -561,6 +568,13 @@ class _MobileCctvAppState extends State<MobileCctvApp>
               ],
             ),
             StatefulShellBranch(
+              // Each branch has its own Navigator, and the router-level
+              // `observers` above only watches the ROOT one — so without this,
+              // pushing a sub-screen (Camera Settings on top of Camera Live)
+              // never reaches `routeObserver`, and RouteAware's didPushNext/
+              // didPopNext never fire. That left live view streaming in the
+              // background the whole time a settings screen was open.
+              observers: [routeObserver],
               routes: [
                 GoRoute(
                   path: AlertsScreen.routeName,
@@ -597,6 +611,13 @@ class _MobileCctvAppState extends State<MobileCctvApp>
               ],
             ),
             StatefulShellBranch(
+              // Each branch has its own Navigator, and the router-level
+              // `observers` above only watches the ROOT one — so without this,
+              // pushing a sub-screen (Camera Settings on top of Camera Live)
+              // never reaches `routeObserver`, and RouteAware's didPushNext/
+              // didPopNext never fire. That left live view streaming in the
+              // background the whole time a settings screen was open.
+              observers: [routeObserver],
               routes: [
                 GoRoute(
                   path: EventsScreen.routeName,
@@ -622,6 +643,13 @@ class _MobileCctvAppState extends State<MobileCctvApp>
               ],
             ),
             StatefulShellBranch(
+              // Each branch has its own Navigator, and the router-level
+              // `observers` above only watches the ROOT one — so without this,
+              // pushing a sub-screen (Camera Settings on top of Camera Live)
+              // never reaches `routeObserver`, and RouteAware's didPushNext/
+              // didPopNext never fire. That left live view streaming in the
+              // background the whole time a settings screen was open.
+              observers: [routeObserver],
               routes: [
                 GoRoute(
                   path: AccountScreen.routeName,
