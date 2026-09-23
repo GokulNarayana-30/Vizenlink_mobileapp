@@ -809,6 +809,7 @@ class LiveViewController extends ChangeNotifier {
       return false;
     }
     await videoController.setLooping(false);
+    await _applyAudioTo(videoController);
     await videoController.play();
     final oldController = lanRtspVideoController;
     lanRtspVideoController = videoController;
@@ -1533,6 +1534,7 @@ class LiveViewController extends ChangeNotifier {
       return false;
     }
     await videoController.setLooping(true);
+    await _applyAudioTo(videoController);
     await videoController.play();
     final oldController = wanVideoController;
     wanVideoController = videoController;
@@ -1814,10 +1816,40 @@ class LiveViewController extends ChangeNotifier {
   /// Mutes/unmutes the received remote audio track — a real live-audio
   /// mute, distinct from the dummy-asset fallback's `VideoPlayerController`
   /// volume control.
+  /// Whether live-view audio should be audible, owned here rather than by the
+  /// screen so it survives a reconnect.
+  ///
+  /// Real bug this fixes (2026-09-23, user-reported on WAN): mute used to be
+  /// applied imperatively to whichever `VideoPlayerController` existed at the
+  /// moment the user tapped it. Every reconnect builds a *new* controller,
+  /// and a fresh one defaults to full volume — so audio came back on its own.
+  /// It shows up on WAN because that path re-creates its player roughly every
+  /// nine seconds under `GetMedia` churn; LAN has the same flaw but reconnects
+  /// rarely enough to hide it.
+  bool _audioEnabled = true;
+
+  /// Applies [_audioEnabled] to a player this controller just built. Every
+  /// `VideoPlayerController` creation must call this, or mute silently lapses
+  /// on the next reconnect.
+  Future<void> _applyAudioTo(VideoPlayerController controller) async {
+    try {
+      await controller.setVolume(_audioEnabled ? 1 : 0);
+    } catch (_) {
+      // Best-effort — a player that's already torn down needs no volume.
+    }
+  }
+
   void setAudioEnabled(bool enabled) {
+    _audioEnabled = enabled;
     for (final track in renderer.srcObject?.getAudioTracks() ?? const []) {
       track.enabled = enabled;
     }
+    // The two `video_player`-backed transports (WAN/KVS and the LAN RTSP
+    // fallback) have no WebRTC tracks — they need the volume set directly.
+    final wan = wanVideoController;
+    if (wan != null) unawaited(_applyAudioTo(wan));
+    final lan = lanRtspVideoController;
+    if (lan != null) unawaited(_applyAudioTo(lan));
   }
 
   MediaStreamTrack? get _remoteVideoTrack {

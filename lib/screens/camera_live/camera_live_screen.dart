@@ -788,12 +788,13 @@ class _CameraLiveScreenState extends State<CameraLiveScreen>
   void _toggleMute() {
     setState(() {
       _isMuted = !_isMuted;
+      // Single call for all three transports: setAudioEnabled now owns the
+      // state and applies it to the WebRTC tracks *and* to both
+      // VideoPlayerController-backed paths (WAN/KVS and the RTSP-over-LAN
+      // fallback, STREAMING_GUIDE.md §2.5). Setting those volumes from here
+      // used to be necessary, but only muted the player that existed at this
+      // instant — every reconnect built a new one at full volume.
       _liveViewController?.setAudioEnabled(!_isMuted);
-      // WAN playback (and the RTSP-over-LAN fallback, STREAMING_GUIDE.md
-      // §2.5) are both a plain VideoPlayerController, not a WebRTC track —
-      // setAudioEnabled (above) only affects the WebRTC renderer's tracks.
-      _liveViewController?.wanVideoController?.setVolume(_isMuted ? 0 : 1);
-      _liveViewController?.lanRtspVideoController?.setVolume(_isMuted ? 0 : 1);
     });
   }
 
