@@ -208,10 +208,29 @@ class _CameraLiveScreenState extends State<CameraLiveScreen>
   Timer? _recordingCaptureTimer;
 
   /// Guards against a new capture tick starting before the previous one's
-  /// decode/encode round trip finishes — dropping an occasional frame under
-  /// load beats letting captures queue up and fall further and further
-  /// behind real time.
+  /// decode/encode round trip finishes — letting captures queue up would put
+  /// them further and further behind real time. A tick that finds a capture
+  /// still running reuses [_lastRecordedFrame] rather than writing nothing:
+  /// see [_startFrameCaptureTimer] for why skipping the write corrupts the
+  /// recording's duration.
   bool _recordingFrameCaptureBusy = false;
+
+  /// The most recent successfully captured frame, re-appended whenever a tick
+  /// arrives before a fresh capture is ready.
+  Uint8List? _lastRecordedFrame;
+
+  /// How many frames have actually been handed to the encoder this recording,
+  /// and when the first one went in. `FlutterQuickVideoEncoder` has no
+  /// per-frame timestamp API (`appendVideoFrame` takes only RGBA), so it
+  /// derives the whole timeline from frame *count* against the fps declared
+  /// in `setup` — these two let [_startFrameCaptureTimer] keep that count
+  /// pinned to wall-clock time.
+  int _recordedFrameCount = 0;
+  DateTime? _recordingFirstFrameAt;
+
+  /// Serializes `appendVideoFrame` calls — the encoder takes one frame at a
+  /// time, and the catch-up loop below can issue several per tick.
+  bool _recordingAppendInFlight = false;
 
   int _recordingWidth = 0;
   int _recordingHeight = 0;
@@ -1020,30 +1039,73 @@ class _CameraLiveScreenState extends State<CameraLiveScreen>
     });
   }
 
-  /// Captures a frame every `1000 ~/ _recordingFps` ms and feeds it to the
-  /// encoder — runs continuously from start to stop, independent of the
-  /// 30-second check-in ticker above (declining/timing out the continue
-  /// dialog stops this too, via [_stopRecording]; accepting just lets it run
-  /// on).
+  /// Feeds the encoder `_recordingFps` frames for every real second, from
+  /// start to stop — independent of the 30-second check-in ticker above
+  /// (declining/timing out the continue dialog stops this too, via
+  /// [_stopRecording]; accepting just lets it run on).
+  ///
+  /// **The frame count is the timeline.** `FlutterQuickVideoEncoder.setup`
+  /// declares a fixed fps and `appendVideoFrame` takes no timestamp, so the
+  /// encoder simply assumes every frame it receives is `1/fps` apart. An
+  /// earlier version skipped the append entirely whenever a capture was still
+  /// in flight, which made the file shorter than real time and played it
+  /// back fast: `_captureRecordingFrame` is a repaint-boundary screenshot
+  /// plus an RGBA readback, and on real hardware it routinely overran the
+  /// 125ms budget 8fps allows. Measured 2026-09-23 on a real device — a 30s
+  /// recording produced a 15s file playing at 2x, i.e. it was sustaining
+  /// only ~4fps while claiming 8.
+  ///
+  /// So a tick never writes nothing: it re-appends [_lastRecordedFrame] when
+  /// no fresh capture is ready, and tops up from a wall-clock target so the
+  /// count can't drift even if whole ticks are late. The cost of a slow
+  /// device is now judder (a repeated frame), not a sped-up clip.
   void _startFrameCaptureTimer() {
     _recordingCaptureTimer = Timer.periodic(
       Duration(milliseconds: 1000 ~/ _recordingFps),
       (_) async {
-        if (_recordingFrameCaptureBusy || !_isRecording) return;
-        _recordingFrameCaptureBusy = true;
-        try {
-          final rgba = await _captureRecordingFrame(
-            _recordingWidth,
-            _recordingHeight,
+        if (!_isRecording) return;
+
+        // Start a fresh capture only when the previous one has finished; its
+        // result lands in _lastRecordedFrame for whichever tick gets there
+        // first. Deliberately not awaited, so a slow capture delays picture
+        // freshness but never the append cadence below.
+        if (!_recordingFrameCaptureBusy) {
+          _recordingFrameCaptureBusy = true;
+          unawaited(
+            _captureRecordingFrame(_recordingWidth, _recordingHeight)
+                .then((rgba) {
+                  if (rgba != null) _lastRecordedFrame = rgba;
+                })
+                .catchError((Object _) {
+                  // Best-effort — one failed capture just means this tick
+                  // reuses the previous frame.
+                })
+                .whenComplete(() => _recordingFrameCaptureBusy = false),
           );
-          if (rgba != null && _isRecording) {
-            await FlutterQuickVideoEncoder.appendVideoFrame(rgba);
+        }
+
+        final frame = _lastRecordedFrame;
+        if (frame == null || _recordingAppendInFlight) return;
+        _recordingAppendInFlight = true;
+        try {
+          final firstAt = _recordingFirstFrameAt ??= DateTime.now();
+          final elapsedMs = DateTime.now().difference(firstAt).inMilliseconds;
+          // +1 so the very first tick writes a frame rather than waiting a
+          // full interval for elapsed time to catch up.
+          var target = (elapsedMs * _recordingFps) ~/ 1000 + 1;
+          // Cap the catch-up so a long stall (backgrounded app, GC pause)
+          // tops up gradually instead of dumping hundreds of frames at once.
+          final ceiling = _recordedFrameCount + _recordingFps;
+          if (target > ceiling) target = ceiling;
+          while (_recordedFrameCount < target && _isRecording) {
+            await FlutterQuickVideoEncoder.appendVideoFrame(frame);
+            _recordedFrameCount++;
           }
         } catch (_) {
-          // Best-effort — a single dropped/failed frame isn't worth
-          // interrupting the recording for.
+          // Best-effort — a failed append isn't worth interrupting the
+          // recording for.
         } finally {
-          _recordingFrameCaptureBusy = false;
+          _recordingAppendInFlight = false;
         }
       },
     );
@@ -1115,6 +1177,13 @@ class _CameraLiveScreenState extends State<CameraLiveScreen>
       _recordingElapsed = Duration.zero;
       _liveRecordingPath = null;
     });
+    // Reset the frame-count timeline — a second recording inheriting the
+    // first one's count would think it was already hours ahead.
+    _lastRecordedFrame = null;
+    _recordedFrameCount = 0;
+    _recordingFirstFrameAt = null;
+    _recordingAppendInFlight = false;
+    _recordingFrameCaptureBusy = false;
 
     if (liveRecordingPath == null) return;
     try {
