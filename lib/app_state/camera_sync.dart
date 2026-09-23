@@ -70,7 +70,9 @@ Future<List<String>> syncCameraFromDevice({
     final knownWan = _findCamera(homesController, cameraId)?.lastKnownWan;
     final lanReachable = knownWan == true
         ? false
-        : await LiveStreamUriClient(nuraeye).checkReachable();
+        : await LiveStreamUriClient(
+            nuraeye,
+          ).checkReachable(timeout: lanReachabilityProbeTimeout);
     // Free answer — record it so settings screens never rediscover the
     // transport by spending a real call's timeout on it.
     recordTransportFromProbe(
@@ -496,7 +498,9 @@ Future<void> pingCameraReachability({
     if (knownWan != true) {
       final nuraeye = NuraeyeClient(connection);
       try {
-        reachable = await LiveStreamUriClient(nuraeye).checkReachable();
+        reachable = await LiveStreamUriClient(
+          nuraeye,
+        ).checkReachable(timeout: lanReachabilityProbeTimeout);
       } finally {
         nuraeye.close();
       }

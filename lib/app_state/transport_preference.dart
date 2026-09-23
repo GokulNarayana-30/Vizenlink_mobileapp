@@ -39,6 +39,24 @@ void recordTransportFromProbe(
   _learnedWanByThing[thingName] = !reachableOnLan;
 }
 
+/// How long to wait on an `AreYouNuraeyeDevice` reachability probe.
+///
+/// This question has an asymmetric cost: a camera that *is* on the LAN
+/// answers in milliseconds, while one that isn't can only be identified by
+/// waiting out the timeout. So the timeout is purely the cost of being
+/// off-LAN, paid on every probe — the default 3s bought nothing beyond
+/// covering a slow local round trip, and sat directly in front of user
+/// actions that then completed in ~300ms.
+///
+/// Deliberately not as short as it could be. This camera's embedded server
+/// demonstrably slows down under concurrent load (it answers `HTTP 429` when
+/// pushed), so a present-but-busy camera can take well over a second to
+/// answer. Reading that as "off-LAN" would send a LAN session down the WAN
+/// path — still correct, thanks to the fallbacks, but slower, which is the
+/// opposite of the point. 2s keeps a healthy margin over a loaded local
+/// round trip while still replacing ~20s of doomed LAN work off-network.
+const lanReachabilityProbeTimeout = Duration(seconds: 2);
+
 /// What a probe last proved about [thingName]: `true` = reachable only over
 /// WAN, `false` = reachable on LAN, `null` = nothing proved yet.
 bool? learnedTransportIsWan(String? thingName) =>

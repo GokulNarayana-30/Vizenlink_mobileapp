@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:camera_api/camera_api.dart';
 
 import '../../app_state/camera_network.dart';
+import '../../app_state/transport_preference.dart';
 import 'package:flutter/material.dart';
 
 import '../../app_state/camera_settings_cache.dart';
@@ -287,7 +288,9 @@ class _ImagingScreenState extends State<ImagingScreen> {
     // timeout for nothing.
     final lanReachable = _camera.lastKnownWan == true
         ? false
-        : await LiveStreamUriClient(nuraeye).checkReachable();
+        : await LiveStreamUriClient(
+            nuraeye,
+          ).checkReachable(timeout: lanReachabilityProbeTimeout);
 
     final CameraResult<ImagingSettings> settingsResultRaw;
     final CameraResult<ImagingOptions> optionsResult;

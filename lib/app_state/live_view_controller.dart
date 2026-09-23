@@ -569,7 +569,7 @@ class LiveViewController extends ChangeNotifier {
       try {
         reachable = await LiveStreamUriClient(
           nuraeye,
-        ).checkReachable(timeout: _lanSwitchBackProbeTimeout);
+        ).checkReachable(timeout: lanReachabilityProbeTimeout);
       } finally {
         nuraeye.close();
       }
