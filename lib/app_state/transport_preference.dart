@@ -39,6 +39,11 @@ void recordTransportFromProbe(
   _learnedWanByThing[thingName] = !reachableOnLan;
 }
 
+/// What a probe last proved about [thingName]: `true` = reachable only over
+/// WAN, `false` = reachable on LAN, `null` = nothing proved yet.
+bool? learnedTransportIsWan(String? thingName) =>
+    thingName == null ? null : _learnedWanByThing[thingName];
+
 /// Test-only reset hook for the process-lifetime map above.
 void debugClearLearnedTransports() => _learnedWanByThing.clear();
 

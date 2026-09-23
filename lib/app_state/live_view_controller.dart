@@ -151,6 +151,16 @@ class LiveViewController extends ChangeNotifier {
   /// wrongly falling back to the much-higher-latency WAN path).
   static const _lanReachabilityCheckTimeout = Duration(seconds: 5);
 
+  /// The health monitor's "are we back on the camera's LAN yet?" probe runs
+  /// every tick for the whole life of a WAN session, and on WAN it can only
+  /// ever time out — so its cost is paid over and over. A camera that *is* on
+  /// the LAN answers `AreYouNuraeyeDevice` in milliseconds, so this needs to
+  /// be only long enough to cover a slow local round trip, not the 3s default
+  /// that left every WAN session stalling for 3s out of every tick (measured
+  /// on real hardware, where it sat directly in front of user actions that
+  /// then completed in ~300ms).
+  static const _lanSwitchBackProbeTimeout = Duration(milliseconds: 1200);
+
   /// WebRTC signaling POST timeout — tightened from an earlier unbounded/10s
   /// value; a genuinely-unreachable-mid-negotiation camera should fail out
   /// quickly enough for reconnect/fallback logic to actually kick in.
@@ -538,11 +548,29 @@ class LiveViewController extends ChangeNotifier {
       return;
     }
 
+    // Try WAN first when a probe has already proved this camera isn't on the
+    // LAN. Rediscovering that through the LAN ladder costs ~20s before the
+    // WAN attempt it was always going to need (3 x 4s GetLiveStreamUri plus
+    // retry gaps, then a 5s reachability recheck) — measured on real
+    // hardware, 22s to first frame of which 20s was doomed LAN work. LAN
+    // still runs below if WAN fails, so a stale answer costs latency, never
+    // a failed connect.
+    final knownWan = learnedTransportIsWan(connection.thingName) == true;
+    if (knownWan && forceTransport != LiveViewTransport.lan) {
+      if (_wanEligible && await _connectWan()) return;
+      if (_disposed) return;
+    }
+
     if (await _connectLan()) return;
     if (_disposed) return;
 
     if (forceTransport == LiveViewTransport.lan) {
       _fail(errorMessage ?? 'Could not connect to the camera (forced LAN)');
+      return;
+    }
+    if (knownWan) {
+      // Already tried WAN above and it failed; LAN just failed too.
+      _fail(errorMessage ?? 'Could not connect to the camera');
       return;
     }
 
@@ -1619,7 +1647,9 @@ class LiveViewController extends ChangeNotifier {
       final nuraeye = NuraeyeClient(connection);
       final bool reachableOnLan;
       try {
-        reachableOnLan = await LiveStreamUriClient(nuraeye).checkReachable();
+        reachableOnLan = await LiveStreamUriClient(
+          nuraeye,
+        ).checkReachable(timeout: _lanSwitchBackProbeTimeout);
       } finally {
         nuraeye.close();
       }
