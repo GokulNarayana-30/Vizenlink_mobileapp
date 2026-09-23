@@ -555,6 +555,28 @@ class LiveViewController extends ChangeNotifier {
     // hardware, 22s to first frame of which 20s was doomed LAN work. LAN
     // still runs below if WAN fails, so a stale answer costs latency, never
     // a failed connect.
+    // Nothing proved yet — the usual case on a cold start, since the learned
+    // map is process-lifetime and the background probes that fill it lose the
+    // race against this first connect. Settle it here with one short probe
+    // instead of discovering the same fact through the LAN ladder's ~20s of
+    // timeouts: a camera on the LAN answers in milliseconds, so this costs
+    // nothing there, and off-LAN it costs 1.2s rather than 20s.
+    if (learnedTransportIsWan(connection.thingName) == null &&
+        forceTransport == null &&
+        connection.thingName != null) {
+      final nuraeye = NuraeyeClient(connection);
+      final bool reachable;
+      try {
+        reachable = await LiveStreamUriClient(
+          nuraeye,
+        ).checkReachable(timeout: _lanSwitchBackProbeTimeout);
+      } finally {
+        nuraeye.close();
+      }
+      if (_disposed) return;
+      recordTransportFromProbe(connection.thingName, reachableOnLan: reachable);
+    }
+
     final knownWan = learnedTransportIsWan(connection.thingName) == true;
     if (knownWan && forceTransport != LiveViewTransport.lan) {
       if (_wanEligible && await _connectWan()) return;
