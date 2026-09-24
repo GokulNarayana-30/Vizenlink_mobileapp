@@ -51,6 +51,21 @@ List<OnvifPoint> _zoneToPolygon(Rect rect) => pixelRectToOnvifPolygon(
   _unitContainer,
 );
 
+/// Whether two polygons describe the same zone, within slack for float
+/// round-tripping through ONVIF XML (the camera's own reply is not always
+/// bit-identical to what was sent). Order-sensitive and same-length only —
+/// good enough to recognize "this is the zone I just sent", not to compare
+/// zones in general.
+bool _polygonsMatch(List<OnvifPoint> a, List<OnvifPoint> b) {
+  const epsilon = 0.02; // 2% of the unit (0-1) coordinate space.
+  if (a.length != b.length) return false;
+  for (var i = 0; i < a.length; i++) {
+    if ((a[i].x - b[i].x).abs() > epsilon) return false;
+    if ((a[i].y - b[i].y).abs() > epsilon) return false;
+  }
+  return true;
+}
+
 Rect _polygonToZoneRect(List<OnvifPoint> polygon) {
   final pixelRect = onvifPolygonToPixelRect(polygon, _unitContainer);
   return Rect.fromLTWH(
@@ -383,6 +398,26 @@ class CameraPrivacyModeScreenState extends State<PrivacyModeScreen> {
     }
   }
 
+  /// Re-fetches the camera's actual mask list, LAN first then WAN — same
+  /// preference the mutation calls just used. Returns `null` if neither
+  /// transport could be reached, which the caller treats as "still unknown,
+  /// keep the original failure" rather than silently assuming success.
+  Future<List<MaskEntry>?> _fetchMasksForVerify(
+    MaskClient maskClient,
+    WanMaskClient? wanMaskClient,
+    bool preferWan,
+  ) async {
+    if (!preferWan) {
+      final result = await maskClient.getMasks();
+      if (result case CameraSuccess(:final value)) return value;
+    }
+    if (wanMaskClient != null) {
+      final result = await wanMaskClient.getMasks();
+      if (result case CameraSuccess(:final value)) return value;
+    }
+    return null;
+  }
+
   Future<void> _save() async {
     final connection = _camera.connection;
     setState(() => _isSaving = true);
@@ -444,7 +479,22 @@ class CameraPrivacyModeScreenState extends State<PrivacyModeScreen> {
         if (result is CameraSuccess) {
           _maskTokenByZoneId.remove(id);
         } else {
-          masksOk = false;
+          // Both transports failed to *confirm* deletion — but on a real
+          // camera the delete can still have gone through, with only its
+          // ONVIF reply lost or arriving after this call's own timeout (the
+          // 10s default has no retry on the same transport). Check what the
+          // camera actually has before reporting failure: if the token is no
+          // longer present, it's gone either way.
+          final current = await _fetchMasksForVerify(
+            maskClient,
+            wanMaskClient,
+            preferWan,
+          );
+          if (current != null && !current.any((m) => m.token == token)) {
+            _maskTokenByZoneId.remove(id);
+          } else {
+            masksOk = false;
+          }
         }
       }
 
@@ -471,7 +521,22 @@ class CameraPrivacyModeScreenState extends State<PrivacyModeScreen> {
               color: maskColor,
             );
           }
-          if (result is! CameraSuccess) masksOk = false;
+          if (result is! CameraSuccess) {
+            // Same "confirm before reporting failure" reasoning as delete
+            // above — this camera can apply SetMask and still miss the
+            // client's timeout with the reply.
+            final current = await _fetchMasksForVerify(
+              maskClient,
+              wanMaskClient,
+              preferWan,
+            );
+            final applied = current
+                ?.where((m) => m.token == existingToken)
+                .firstOrNull;
+            if (applied == null || !_polygonsMatch(applied.polygon, polygon)) {
+              masksOk = false;
+            }
+          }
         } else {
           CameraResult<String>? result;
           if (!preferWan) {
@@ -495,7 +560,28 @@ class CameraPrivacyModeScreenState extends State<PrivacyModeScreen> {
           if (result case CameraSuccess(:final value)) {
             _maskTokenByZoneId[zone.id] = value;
           } else {
-            masksOk = false;
+            // Same reasoning as the delete/set branches above — look for a
+            // mask that matches this zone's polygon and isn't already
+            // claimed by another zone, in case CreateMask actually landed
+            // and only its reply (carrying the new token) was lost.
+            final current = await _fetchMasksForVerify(
+              maskClient,
+              wanMaskClient,
+              preferWan,
+            );
+            final claimedTokens = _maskTokenByZoneId.values.toSet();
+            final applied = current
+                ?.where(
+                  (m) =>
+                      !claimedTokens.contains(m.token) &&
+                      _polygonsMatch(m.polygon, polygon),
+                )
+                .firstOrNull;
+            if (applied != null) {
+              _maskTokenByZoneId[zone.id] = applied.token;
+            } else {
+              masksOk = false;
+            }
           }
         }
       }
