@@ -21,6 +21,8 @@ import '../../app_state/debug_transport_override.dart';
 import '../../app_state/homes_controller.dart';
 import '../../app_state/live_view_controller.dart';
 import '../../app_state/route_observer.dart';
+import '../../app_state/settings_save_verify.dart';
+import '../../app_state/transport_preference.dart';
 import '../../models/camera.dart';
 import '../../rtsp/rtsp_remux_proxy.dart';
 import '../../theme/app_colors.dart';
@@ -1426,19 +1428,29 @@ class _CameraLiveScreenState extends State<CameraLiveScreen>
     final connection = camera.connection;
     if (connection == null) return simulateCameraSave();
 
-    final nuraeye = NuraeyeClient(connection);
-    final client = DeterrenceClient(nuraeye);
-    var result = turningOn
-        ? await client.activateDeterrence(action)
-        : await client.deactivateDeterrence(action);
-    nuraeye.close();
-    final thingName = connection.thingName;
-    if (result is! CameraSuccess && thingName != null) {
-      final wanClient = WanDeterrenceClient(thingName);
-      result = turningOn
-          ? await wanClient.activateDeterrence(action)
-          : await wanClient.deactivateDeterrence(action);
-    }
+    // Was always trying LAN first regardless of what's already known about
+    // this camera's transport — the same ~10s-timeout-then-WAN pattern the
+    // dedicated settings screens had, now routed through
+    // callPreferringKnownTransport like they are.
+    final result = await callPreferringKnownTransport(
+      camera: camera,
+      thingName: connection.thingName,
+      lan: () async {
+        final nuraeye = NuraeyeClient(connection);
+        final client = DeterrenceClient(nuraeye);
+        final result = turningOn
+            ? await client.activateDeterrence(action)
+            : await client.deactivateDeterrence(action);
+        nuraeye.close();
+        return result;
+      },
+      wan: () {
+        final wanClient = WanDeterrenceClient(connection.thingName!);
+        return turningOn
+            ? wanClient.activateDeterrence(action)
+            : wanClient.deactivateDeterrence(action);
+      },
+    );
     return result is CameraSuccess;
   }
 
@@ -1463,16 +1475,42 @@ class _CameraLiveScreenState extends State<CameraLiveScreen>
       final wireMode = newMode == CameraPrivacyMode.full
           ? PrivacyMode.full
           : PrivacyMode.none;
-      final nuraeye = NuraeyeClient(connection);
-      var result = await PrivacyModeClient(nuraeye).setPrivacyMode(wireMode);
-      nuraeye.close();
-      // A failed LAN Apply/Set retries over WAN before surfacing an error,
-      // per mobile-app-screen-conventions.md's LAN/WAN convention.
       final thingName = connection.thingName;
-      if (result is! CameraSuccess && thingName != null) {
-        result = await WanPrivacyModeClient(thingName).setPrivacyMode(wireMode);
-      }
-      succeeded = result is CameraSuccess;
+      // Was always trying LAN first regardless of what's already known
+      // about this camera's transport, and never verified a timeout before
+      // reporting failure — same two gaps privacy_mode_screen.dart's own
+      // Off/Full tiles had, fixed the same way here.
+      final result = await callPreferringKnownTransport(
+        camera: camera,
+        thingName: thingName,
+        lan: () async {
+          final nuraeye = NuraeyeClient(connection);
+          final result = await PrivacyModeClient(
+            nuraeye,
+          ).setPrivacyMode(wireMode);
+          nuraeye.close();
+          return result;
+        },
+        wan: () => WanPrivacyModeClient(thingName!).setPrivacyMode(wireMode),
+      );
+      succeeded =
+          result is CameraSuccess ||
+          await verifyAfterTimeout<PrivacyMode>(
+            fetchCurrent: () => callPreferringKnownTransport(
+              camera: camera,
+              thingName: thingName,
+              lan: () async {
+                final nuraeye = NuraeyeClient(connection);
+                final result = await PrivacyModeClient(
+                  nuraeye,
+                ).getPrivacyMode();
+                nuraeye.close();
+                return result;
+              },
+              wan: () => WanPrivacyModeClient(thingName!).getPrivacyMode(),
+            ),
+            matchesExpected: (current) => current == wireMode,
+          );
     } else {
       succeeded = await simulateCameraSave();
     }
@@ -1511,23 +1549,52 @@ class _CameraLiveScreenState extends State<CameraLiveScreen>
     final connection = camera.connection;
     final bool succeeded;
     if (connection != null) {
-      final client = OnvifImagingClient(
-        connection,
-        httpClient: CameraNetwork.clientFor(connection.host),
-      );
-      var result = await client.setImagingSettings(
-        ImagingSettings(irCutFilterMode: _videoModeToIrCutFilter(next)),
-      );
-      client.close();
-      // A failed LAN Apply/Set retries over WAN before surfacing an error,
-      // per mobile-app-screen-conventions.md's LAN/WAN convention.
       final thingName = connection.thingName;
-      if (result is! CameraSuccess && thingName != null) {
-        result = await WanImagingClient(
-          thingName,
-        ).setDayNightMode(_videoModeToIrCutFilter(next));
-      }
-      succeeded = result is CameraSuccess;
+      // Was always trying LAN first regardless of what's already known
+      // about this camera's transport, and never verified a timeout before
+      // reporting failure — same two gaps video_mode_screen.dart itself had,
+      // fixed the same way here.
+      final result = await callPreferringKnownTransport(
+        camera: camera,
+        thingName: thingName,
+        lan: () async {
+          final client = OnvifImagingClient(
+            connection,
+            httpClient: CameraNetwork.clientFor(connection.host),
+          );
+          final result = await client.setImagingSettings(
+            ImagingSettings(irCutFilterMode: _videoModeToIrCutFilter(next)),
+          );
+          client.close();
+          return result;
+        },
+        wan: () => WanImagingClient(
+          thingName!,
+        ).setDayNightMode(_videoModeToIrCutFilter(next)),
+      );
+      succeeded =
+          result is CameraSuccess ||
+          await verifyAfterTimeout<String?>(
+            fetchCurrent: () async {
+              final client = OnvifImagingClient(
+                connection,
+                httpClient: CameraNetwork.clientFor(connection.host),
+              );
+              final lanResult = await client.getImagingSettings();
+              client.close();
+              if (lanResult is CameraSuccess<ImagingSettings>) {
+                return CameraSuccess(lanResult.value.irCutFilterMode);
+              }
+              if (thingName == null) {
+                return const CameraFailure<String?>(
+                  'no WAN fallback available',
+                );
+              }
+              return WanImagingClient(thingName).getDayNightMode();
+            },
+            matchesExpected: (current) =>
+                current == _videoModeToIrCutFilter(next),
+          );
     } else {
       succeeded = await simulateCameraSave();
     }
