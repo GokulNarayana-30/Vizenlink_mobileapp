@@ -15,6 +15,7 @@ import '../../widgets/camera_preview_thumbnail.dart';
 import '../../widgets/fixed_preview_layout.dart';
 import '../../widgets/glass_card.dart';
 import '../../widgets/gradient_background.dart';
+import '../../app_state/settings_save_verify.dart';
 import '../../widgets/navigation_leave_guard.dart';
 import '../../widgets/refresh_preview_button.dart';
 import '../../widgets/reload_settings_button.dart';
@@ -623,6 +624,61 @@ class _ImagingScreenState extends State<ImagingScreen> {
           }
           imagingSucceeded = wanQualityResult is CameraSuccess && wdrOk;
         }
+
+        if (!imagingSucceeded) {
+          // Both transports failed to *confirm* the change — but ONVIF
+          // Set/WAN Set can still have landed with only the reply lost
+          // (10s LAN default, no same-transport retry). Re-read before
+          // reporting failure rather than assuming rejection.
+          imagingSucceeded = await verifyAfterTimeout<ImagingSettings>(
+            fetchCurrent: () async {
+              if (!preferWan) {
+                final imagingClient = OnvifImagingClient(
+                  connection,
+                  httpClient: CameraNetwork.clientFor(connection.host),
+                );
+                final result = await imagingClient.getImagingSettings();
+                imagingClient.close();
+                if (result is CameraSuccess<ImagingSettings>) return result;
+              }
+              if (thingName == null) {
+                return const CameraFailure<ImagingSettings>(
+                  'no WAN fallback available',
+                );
+              }
+              final wanResult = await WanImageQualityClient(
+                thingName,
+              ).getImageSettings();
+              if (wanResult is! CameraSuccess<Map<String, dynamic>>) {
+                return CameraFailure<ImagingSettings>(
+                  wanResult is CameraFailure
+                      ? (wanResult as CameraFailure).reason
+                      : 'timed out',
+                );
+              }
+              final map = wanResult.value;
+              return CameraSuccess(
+                ImagingSettings(
+                  brightness: (map['brightness'] as num?)?.toDouble(),
+                  colorSaturation: (map['saturation'] as num?)?.toDouble(),
+                  contrast: (map['contrast'] as num?)?.toDouble(),
+                  sharpness: (map['sharpness'] as num?)?.toDouble(),
+                  whiteBalanceMode: map['white_balance_mode'] as String?,
+                  exposureMode: map['exposure_mode'] as String?,
+                ),
+              );
+            },
+            matchesExpected: (current) {
+              const epsilon = 1.0; // camera-side rounding slack
+              bool close(double? sent, double? got) =>
+                  sent == null || (got != null && (sent - got).abs() < epsilon);
+              return close(_brightness, current.brightness) &&
+                  close(_contrast, current.contrast) &&
+                  close(_saturation, current.colorSaturation) &&
+                  close(_sharpness, current.sharpness);
+            },
+          );
+        }
       }
 
       var mirrorFlipSucceeded = true;
@@ -641,6 +697,24 @@ class _ImagingScreenState extends State<ImagingScreen> {
           ).setMirrorFlip(_toWireMirrorFlip(_mirrorFlip));
         }
         mirrorFlipSucceeded = mirrorFlipResult is CameraSuccess;
+        if (!mirrorFlipSucceeded) {
+          mirrorFlipSucceeded = await verifyAfterTimeout(
+            fetchCurrent: () async {
+              if (!preferWan) {
+                final nuraeye = NuraeyeClient(connection);
+                final result = await MirrorFlipClient(nuraeye).getMirrorFlip();
+                nuraeye.close();
+                if (result is CameraSuccess) return result;
+              }
+              if (thingName == null) {
+                return const CameraFailure('no WAN fallback available');
+              }
+              return WanMirrorFlipClient(thingName).getMirrorFlip();
+            },
+            matchesExpected: (current) =>
+                current == _toWireMirrorFlip(_mirrorFlip),
+          );
+        }
       }
 
       var antiFlickerSucceeded = true;
@@ -659,6 +733,26 @@ class _ImagingScreenState extends State<ImagingScreen> {
           ).setAntiFlickerMode(_toWireAntiFlicker(_antiFlickerMode));
         }
         antiFlickerSucceeded = antiFlickerResult is CameraSuccess;
+        if (!antiFlickerSucceeded) {
+          antiFlickerSucceeded = await verifyAfterTimeout(
+            fetchCurrent: () async {
+              if (!preferWan) {
+                final nuraeye = NuraeyeClient(connection);
+                final result = await AntiFlickerClient(
+                  nuraeye,
+                ).getAntiFlickerMode();
+                nuraeye.close();
+                if (result is CameraSuccess) return result;
+              }
+              if (thingName == null) {
+                return const CameraFailure('no WAN fallback available');
+              }
+              return WanAntiFlickerClient(thingName).getAntiFlickerMode();
+            },
+            matchesExpected: (current) =>
+                current == _toWireAntiFlicker(_antiFlickerMode),
+          );
+        }
       }
 
       succeeded =

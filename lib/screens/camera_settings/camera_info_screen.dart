@@ -7,6 +7,7 @@ import 'package:go_router/go_router.dart';
 import '../../app_state/camera_settings_cache.dart';
 import '../../app_state/camera_sync.dart';
 import '../../app_state/homes_controller.dart';
+import '../../app_state/settings_save_verify.dart';
 import '../../app_state/transport_preference.dart';
 import '../../models/camera.dart';
 import '../../models/home.dart';
@@ -251,8 +252,45 @@ class _CameraInfoScreenState extends State<CameraInfoScreen> {
           wan: () =>
               WanDeviceIdentityClient(wanThingName!).setDeviceName(newName),
         );
+        // SetScopes (LAN) / the WAN equivalent can land on the camera with
+        // only its reply lost to a timeout — re-read before reporting
+        // failure, same reasoning as every other screen using this pattern.
+        final nameVerified =
+            result is! CameraSuccess &&
+            await verifyAfterTimeout<String>(
+              fetchCurrent: () async {
+                final client = OnvifDeviceClient(
+                  connection,
+                  httpClient: CameraNetwork.clientFor(connection.host),
+                );
+                final lanResult = await client.getDeviceIdentity();
+                client.close();
+                if (lanResult case CameraSuccess(:final value)) {
+                  return CameraSuccess(value.name);
+                }
+                if (wanThingName == null) {
+                  return const CameraFailure<String>(
+                    'no WAN fallback available',
+                  );
+                }
+                final wanResult = await WanDeviceIdentityClient(
+                  wanThingName,
+                ).getDeviceIdentity();
+                if (wanResult case CameraSuccess(:final value)) {
+                  return CameraSuccess(value.name);
+                }
+                return const CameraFailure<String>('timed out');
+              },
+              matchesExpected: (current) => current == newName,
+            );
         switch (result) {
           case CameraSuccess():
+            widget.homesController.renameCamera(
+              _originalHomeId,
+              widget.camera.id,
+              newName,
+            );
+          case _ when nameVerified:
             widget.homesController.renameCamera(
               _originalHomeId,
               widget.camera.id,
@@ -298,8 +336,41 @@ class _CameraInfoScreenState extends State<CameraInfoScreen> {
             wanThingName!,
           ).setDeviceLocation(newLocation),
         );
+        final locationVerified =
+            result is! CameraSuccess &&
+            await verifyAfterTimeout<String>(
+              fetchCurrent: () async {
+                final client = OnvifDeviceClient(
+                  connection,
+                  httpClient: CameraNetwork.clientFor(connection.host),
+                );
+                final lanResult = await client.getDeviceIdentity();
+                client.close();
+                if (lanResult case CameraSuccess(:final value)) {
+                  return CameraSuccess(value.location);
+                }
+                if (wanThingName == null) {
+                  return const CameraFailure<String>(
+                    'no WAN fallback available',
+                  );
+                }
+                final wanResult = await WanDeviceIdentityClient(
+                  wanThingName,
+                ).getDeviceIdentity();
+                if (wanResult case CameraSuccess(:final value)) {
+                  return CameraSuccess(value.location);
+                }
+                return const CameraFailure<String>('timed out');
+              },
+              matchesExpected: (current) => current == newLocation,
+            );
         switch (result) {
           case CameraSuccess():
+            widget.homesController.updateCamera(
+              widget.camera.id,
+              (camera) => camera.copyWith(location: newLocation),
+            );
+          case _ when locationVerified:
             widget.homesController.updateCamera(
               widget.camera.id,
               (camera) => camera.copyWith(location: newLocation),
@@ -353,8 +424,31 @@ class _CameraInfoScreenState extends State<CameraInfoScreen> {
           wan: () =>
               WanDeviceIdentityClient(wanThingName!).setTimeZone(_timezone),
         );
+        // No LAN getTimeZone exists — verify over WAN only, when reachable.
+        final timezoneVerified =
+            result is! CameraSuccess &&
+            wanThingName != null &&
+            await verifyAfterTimeout<String>(
+              fetchCurrent: () => WanDeviceIdentityClient(wanThingName)
+                  .getDeviceIdentity()
+                  .then(
+                    (r) => switch (r) {
+                      CameraSuccess(:final value) => CameraSuccess<String>(
+                        value.timezone,
+                      ),
+                      _ => const CameraFailure<String>('timed out'),
+                    },
+                  ),
+              matchesExpected: (current) => current == _timezone,
+            );
         switch (result) {
           case CameraSuccess():
+            widget.homesController.updateCameraTimezone(
+              _homeId,
+              widget.camera.id,
+              _timezone,
+            );
+          case _ when timezoneVerified:
             widget.homesController.updateCameraTimezone(
               _homeId,
               widget.camera.id,
@@ -1050,6 +1144,12 @@ class _ModifyPasswordDialogState extends State<_ModifyPasswordDialog> {
         thingName!,
       ).setUserPassword(connection.username, newPassword),
     );
+    // Deliberately no verify-after-timeout here, unlike name/location/
+    // timezone above — there is no safe way to "read back" a password to
+    // confirm it changed, and guessing wrong in either direction is worse
+    // than the plain timeout message: reporting success on a change that
+    // didn't land leaves the saved credential wrong with no visible sign,
+    // and there's no get call to check against in the first place.
 
     if (!mounted) return;
     switch (result) {

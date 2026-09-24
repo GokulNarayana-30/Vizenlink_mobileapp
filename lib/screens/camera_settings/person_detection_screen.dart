@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import '../../app_state/camera_sync.dart';
 import '../../app_state/homes_controller.dart';
+import '../../app_state/settings_save_verify.dart';
 import '../../app_state/transport_preference.dart';
 import '../../models/camera.dart';
 import '../../widgets/drawable_zone.dart';
@@ -358,46 +359,86 @@ class _PersonDetectionScreenState extends State<PersonDetectionScreen> {
       final nuraeye = NuraeyeClient(connection);
       final results = <CameraResult<void>>[];
       if (enabledChanged) {
-        results.add(
-          await callPreferringKnownTransport(
-            camera: _camera,
-            thingName: thingName,
-            lan: () => EventPreferencesClient(
-              nuraeye,
-            ).setEventPreferences({'PersonDetected': _enabled}),
-            wan: () => WanEventPreferencesClient(
-              thingName!,
-            ).setEventPreferences({'PersonDetected': _enabled}),
-          ),
+        var result = await callPreferringKnownTransport(
+          camera: _camera,
+          thingName: thingName,
+          lan: () => EventPreferencesClient(
+            nuraeye,
+          ).setEventPreferences({'PersonDetected': _enabled}),
+          wan: () => WanEventPreferencesClient(
+            thingName!,
+          ).setEventPreferences({'PersonDetected': _enabled}),
         );
+        if (result is! CameraSuccess) {
+          // Same "camera applied it, reply was just lost" case
+          // privacy_mode_screen.dart's mask verify handles — SetXxx here has
+          // no retry on the same transport before the LAN/WAN fallback.
+          final verified = await verifyAfterTimeout<Map<String, bool>>(
+            fetchCurrent: () => callPreferringKnownTransport(
+              camera: _camera,
+              thingName: thingName,
+              lan: () => EventPreferencesClient(nuraeye).getEventPreferences(),
+              wan: () =>
+                  WanEventPreferencesClient(thingName!).getEventPreferences(),
+            ),
+            matchesExpected: (current) => current['PersonDetected'] == _enabled,
+          );
+          if (verified) result = const CameraSuccess(null);
+        }
+        results.add(result);
       }
       if (loiteringChanged) {
-        results.add(
-          await callPreferringKnownTransport(
-            camera: _camera,
-            thingName: thingName,
-            lan: () => LoiteringDurationClient(
-              nuraeye,
-            ).setLoiteringDuration(_loiteringDurationSeconds),
-            wan: () => WanLoiteringDurationClient(
-              thingName!,
-            ).setLoiteringDuration(_loiteringDurationSeconds),
-          ),
+        var result = await callPreferringKnownTransport(
+          camera: _camera,
+          thingName: thingName,
+          lan: () => LoiteringDurationClient(
+            nuraeye,
+          ).setLoiteringDuration(_loiteringDurationSeconds),
+          wan: () => WanLoiteringDurationClient(
+            thingName!,
+          ).setLoiteringDuration(_loiteringDurationSeconds),
         );
+        if (result is! CameraSuccess) {
+          final verified = await verifyAfterTimeout<int>(
+            fetchCurrent: () => callPreferringKnownTransport(
+              camera: _camera,
+              thingName: thingName,
+              lan: () =>
+                  LoiteringDurationClient(nuraeye).getLoiteringDuration(),
+              wan: () =>
+                  WanLoiteringDurationClient(thingName!).getLoiteringDuration(),
+            ),
+            matchesExpected: (current) => current == _loiteringDurationSeconds,
+          );
+          if (verified) result = const CameraSuccess(null);
+        }
+        results.add(result);
       }
       if (bboxChanged) {
-        results.add(
-          await callPreferringKnownTransport(
-            camera: _camera,
-            thingName: thingName,
-            lan: () => BboxOverlayClient(
-              nuraeye,
-            ).setBboxOverlayEnabled(_bboxOverlayEnabled),
-            wan: () => WanBboxOverlayClient(
-              thingName!,
-            ).setBboxOverlayEnabled(_bboxOverlayEnabled),
-          ),
+        var result = await callPreferringKnownTransport(
+          camera: _camera,
+          thingName: thingName,
+          lan: () => BboxOverlayClient(
+            nuraeye,
+          ).setBboxOverlayEnabled(_bboxOverlayEnabled),
+          wan: () => WanBboxOverlayClient(
+            thingName!,
+          ).setBboxOverlayEnabled(_bboxOverlayEnabled),
         );
+        if (result is! CameraSuccess) {
+          final verified = await verifyAfterTimeout<bool>(
+            fetchCurrent: () => callPreferringKnownTransport(
+              camera: _camera,
+              thingName: thingName,
+              lan: () => BboxOverlayClient(nuraeye).isBboxOverlayEnabled(),
+              wan: () =>
+                  WanBboxOverlayClient(thingName!).isBboxOverlayEnabled(),
+            ),
+            matchesExpected: (current) => current == _bboxOverlayEnabled,
+          );
+          if (verified) result = const CameraSuccess(null);
+        }
+        results.add(result);
       }
       nuraeye.close();
       succeeded = results.every((r) => r is CameraSuccess);

@@ -604,6 +604,39 @@ class _OnScreenDisplayScreenState extends State<OnScreenDisplayScreen> {
       // confirmed transport was WAN — see Camera.lastKnownWan's doc.
       final preferWan = _camera.lastKnownWan == true && wanClient != null;
 
+      // Both CreateOSD/UpdateOSD/DeleteOSD (LAN) and setOsd/deleteOsd (WAN)
+      // can land on the camera with only their reply lost to a timeout — the
+      // three verify helpers below re-read GetOSDs before a slot is reported
+      // failed, same reasoning as privacy_mode_screen.dart's mask verify.
+      Future<List<OsdEntry>?> fetchOsds() async {
+        if (!preferWan) {
+          final result = await client.getOsds();
+          if (result case CameraSuccess(:final value)) return value;
+        }
+        if (wanClient != null) {
+          final result = await wanClient.getOsds();
+          if (result case CameraSuccess(:final value)) return value;
+        }
+        return null;
+      }
+
+      bool matchesSlot(
+        OsdEntry entry, {
+        required String textType,
+        String? plainText,
+        required String posType,
+        String? dateFormat,
+        String? timeFormat,
+        required OsdColor color,
+      }) {
+        return entry.textType == textType &&
+            (plainText == null || entry.plainText == plainText) &&
+            entry.posType == posType &&
+            (dateFormat == null || entry.dateFormat == dateFormat) &&
+            (timeFormat == null || entry.timeFormat == timeFormat) &&
+            entry.fontColor == color;
+      }
+
       // Time (DateAndTime) slot.
       if (_timeEnabled) {
         final posType = _wirePosType(_timePosition);
@@ -646,7 +679,21 @@ class _OnScreenDisplayScreenState extends State<OnScreenDisplayScreen> {
                 : CameraFailure(reasonOf(wanResult));
           }
           if (result is! CameraSuccess) {
-            failures.add('time (${reasonOf(result!)})');
+            final osds = await fetchOsds();
+            final applied = osds
+                ?.where((e) => e.token == timeToken)
+                .firstOrNull;
+            final verified =
+                applied != null &&
+                matchesSlot(
+                  applied,
+                  textType: 'DateAndTime',
+                  posType: posType,
+                  dateFormat: dateWire,
+                  timeFormat: timeWire,
+                  color: color,
+                );
+            if (!verified) failures.add('time (${reasonOf(result!)})');
           }
         } else {
           CameraResult<String>? result;
@@ -674,7 +721,24 @@ class _OnScreenDisplayScreenState extends State<OnScreenDisplayScreen> {
           if (result case CameraSuccess(:final value)) {
             _timeToken = value;
           } else {
-            failures.add('time (${reasonOf(result!)})');
+            final osds = await fetchOsds();
+            final applied = osds
+                ?.where(
+                  (e) => matchesSlot(
+                    e,
+                    textType: 'DateAndTime',
+                    posType: posType,
+                    dateFormat: dateWire,
+                    timeFormat: timeWire,
+                    color: color,
+                  ),
+                )
+                .firstOrNull;
+            if (applied != null) {
+              _timeToken = applied.token;
+            } else {
+              failures.add('time (${reasonOf(result!)})');
+            }
           }
         }
       } else if (_timeToken != null) {
@@ -686,7 +750,12 @@ class _OnScreenDisplayScreenState extends State<OnScreenDisplayScreen> {
         if (result is CameraSuccess) {
           _timeToken = null;
         } else {
-          failures.add('time (${reasonOf(result!)})');
+          final osds = await fetchOsds();
+          if (osds != null && !osds.any((e) => e.token == _timeToken)) {
+            _timeToken = null;
+          } else {
+            failures.add('time (${reasonOf(result!)})');
+          }
         }
       }
 
@@ -728,7 +797,20 @@ class _OnScreenDisplayScreenState extends State<OnScreenDisplayScreen> {
                 : CameraFailure(reasonOf(wanResult));
           }
           if (result is! CameraSuccess) {
-            failures.add('custom text (${reasonOf(result!)})');
+            final osds = await fetchOsds();
+            final applied = osds
+                ?.where((e) => e.token == customTextToken)
+                .firstOrNull;
+            final verified =
+                applied != null &&
+                matchesSlot(
+                  applied,
+                  textType: 'Plain',
+                  plainText: _customTextController.text,
+                  posType: posType,
+                  color: color,
+                );
+            if (!verified) failures.add('custom text (${reasonOf(result!)})');
           }
         } else {
           CameraResult<String>? result;
@@ -754,7 +836,23 @@ class _OnScreenDisplayScreenState extends State<OnScreenDisplayScreen> {
           if (result case CameraSuccess(:final value)) {
             _customTextToken = value;
           } else {
-            failures.add('custom text (${reasonOf(result!)})');
+            final osds = await fetchOsds();
+            final applied = osds
+                ?.where(
+                  (e) => matchesSlot(
+                    e,
+                    textType: 'Plain',
+                    plainText: _customTextController.text,
+                    posType: posType,
+                    color: color,
+                  ),
+                )
+                .firstOrNull;
+            if (applied != null) {
+              _customTextToken = applied.token;
+            } else {
+              failures.add('custom text (${reasonOf(result!)})');
+            }
           }
         }
       } else if (_customTextToken != null) {
@@ -766,7 +864,12 @@ class _OnScreenDisplayScreenState extends State<OnScreenDisplayScreen> {
         if (result is CameraSuccess) {
           _customTextToken = null;
         } else {
-          failures.add('custom text (${reasonOf(result!)})');
+          final osds = await fetchOsds();
+          if (osds != null && !osds.any((e) => e.token == _customTextToken)) {
+            _customTextToken = null;
+          } else {
+            failures.add('custom text (${reasonOf(result!)})');
+          }
         }
       }
 

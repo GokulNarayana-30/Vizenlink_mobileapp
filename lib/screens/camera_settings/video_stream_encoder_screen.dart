@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import '../../app_state/camera_settings_cache.dart';
 import '../../app_state/homes_controller.dart';
+import '../../app_state/settings_save_verify.dart';
 import '../../models/camera.dart';
 import '../../widgets/glass_card.dart';
 import '../../widgets/gradient_background.dart';
@@ -245,7 +246,7 @@ class _VideoStreamEncoderScreenState extends State<VideoStreamEncoderScreen> {
     final connection = _camera.connection;
     setState(() => _isSaving = true);
 
-    final bool succeeded;
+    bool succeeded;
     if (connection != null) {
       final configToken = _configTokenFor(widget.stream);
       final client = OnvifVideoEncoderClient(
@@ -281,15 +282,48 @@ class _VideoStreamEncoderScreenState extends State<VideoStreamEncoderScreen> {
       );
       client.close();
 
+      bool viaWan = false;
       if (result is CameraSuccess) {
         succeeded = true;
       } else if (thingName != null) {
+        viaWan = true;
         final wanResult = await WanVideoEncoderClient(
           thingName,
         ).setVideoEncoderSettings(settings);
         succeeded = wanResult is CameraSuccess;
       } else {
         succeeded = false;
+      }
+
+      if (!succeeded) {
+        // This ONVIF/WAN Set can land on the camera with only its reply
+        // lost to a timeout — re-read before reporting failure.
+        succeeded = await verifyAfterTimeout<VideoEncoderSettings>(
+          fetchCurrent: () {
+            if (!viaWan) {
+              final verifyClient = OnvifVideoEncoderClient(
+                connection,
+                httpClient: CameraNetwork.clientFor(connection.host),
+              );
+              return verifyClient
+                  .getVideoEncoderSettings(configToken: configToken)
+                  .whenComplete(verifyClient.close);
+            }
+            return WanVideoEncoderClient(
+              thingName!,
+            ).getVideoEncoderSettings(configToken: configToken);
+          },
+          matchesExpected: (current) =>
+              current.bitrate == settings.bitrate &&
+              current.frameRate == settings.frameRate &&
+              current.govLength == settings.govLength &&
+              current.quality == settings.quality &&
+              current.encoderProfile == settings.encoderProfile &&
+              current.width == settings.width &&
+              current.height == settings.height &&
+              current.encoding == settings.encoding &&
+              current.cbr == settings.cbr,
+        );
       }
     } else {
       succeeded = await simulateCameraSave();

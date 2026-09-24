@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 
 import '../../app_state/camera_sync.dart';
 import '../../app_state/homes_controller.dart';
+import '../../app_state/settings_save_verify.dart';
 import '../../app_state/transport_preference.dart';
 import '../../models/camera.dart';
 import '../../widgets/camera_preview_thumbnail.dart';
@@ -243,7 +244,37 @@ class _NightModeScreenState extends State<NightModeScreen> {
           thingName!,
         ).setNightVisionType(_nightModeToType(_mode)),
       );
-      succeeded = result is CameraSuccess;
+      // Same reasoning as every other screen using this pattern — a Set that
+      // succeeded on the camera can still miss its own 10s-timeout reply.
+      succeeded =
+          result is CameraSuccess ||
+          await verifyAfterTimeout<NightVisionType>(
+            fetchCurrent: () async {
+              final nuraeye = NuraeyeClient(connection);
+              final result = await NightVisionClient(
+                nuraeye,
+              ).getNightVisionType();
+              nuraeye.close();
+              if (result is CameraSuccess<NightVisionStatus>) {
+                return CameraSuccess(result.value.type);
+              }
+              if (thingName == null) {
+                return const CameraFailure<NightVisionType>(
+                  'no WAN fallback available',
+                );
+              }
+              final wanResult = await WanNightVisionClient(
+                thingName,
+              ).getNightVisionType();
+              if (wanResult case CameraSuccess<NightVisionStatus>(
+                :final value,
+              )) {
+                return CameraSuccess(value.type);
+              }
+              return const CameraFailure<NightVisionType>('timed out');
+            },
+            matchesExpected: (current) => current == _nightModeToType(_mode),
+          );
     } else {
       succeeded = await simulateCameraSave();
     }

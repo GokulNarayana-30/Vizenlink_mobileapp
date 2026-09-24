@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 import '../../app_state/camera_settings_cache.dart';
 import '../../app_state/camera_sync.dart';
 import '../../app_state/homes_controller.dart';
+import '../../app_state/settings_save_verify.dart';
 import '../../app_state/transport_preference.dart';
 import '../../models/camera.dart';
 import '../../widgets/camera_preview_thumbnail.dart';
@@ -253,7 +254,33 @@ class _VideoModeScreenState extends State<VideoModeScreen> {
           thingName!,
         ).setDayNightMode(_videoModeToIrCutFilter(_mode)),
       );
-      succeeded = result is CameraSuccess;
+      // The ONVIF SetImagingSettings/WAN SetDayNightMode call this camera can
+      // apply and still miss its own 10s-timeout reply with — re-read the
+      // effective mode before reporting failure rather than assuming
+      // rejection.
+      succeeded =
+          result is CameraSuccess ||
+          await verifyAfterTimeout<String?>(
+            fetchCurrent: () async {
+              final client = OnvifImagingClient(
+                connection,
+                httpClient: CameraNetwork.clientFor(connection.host),
+              );
+              final result = await client.getImagingSettings();
+              client.close();
+              if (result is CameraSuccess<ImagingSettings>) {
+                return CameraSuccess(result.value.irCutFilterMode);
+              }
+              if (thingName == null) {
+                return const CameraFailure<String?>(
+                  'no WAN fallback available',
+                );
+              }
+              return WanImagingClient(thingName).getDayNightMode();
+            },
+            matchesExpected: (current) =>
+                current == _videoModeToIrCutFilter(_mode),
+          );
     } else {
       succeeded = await simulateCameraSave();
     }

@@ -4,6 +4,7 @@ import '../../app_state/camera_network.dart';
 import 'package:flutter/material.dart';
 
 import '../../app_state/homes_controller.dart';
+import '../../app_state/settings_save_verify.dart';
 import '../../app_state/transport_preference.dart';
 import '../../models/camera.dart';
 import '../../widgets/glass_card.dart';
@@ -301,6 +302,44 @@ class _AudioScreenState extends State<AudioScreen> {
             }
           }
         }
+        // Both Set calls above can land on the camera with only their reply
+        // lost to the 10s LAN timeout — re-read before reporting failure.
+        if (micGainResult != null && micGainResult is! CameraSuccess) {
+          final verified = await verifyAfterTimeout<int>(
+            fetchCurrent: () async {
+              if (!preferWan) {
+                final volumeClient = AudioVolumeClient(connection);
+                final result = await volumeClient.getMicGain();
+                volumeClient.close();
+                if (result is CameraSuccess<int>) return result;
+              }
+              if (thingName == null) {
+                return const CameraFailure<int>('no WAN fallback available');
+              }
+              return WanAudioVolumeClient(thingName).getMicGain();
+            },
+            matchesExpected: (current) => current == _micGain.round(),
+          );
+          if (verified) micGainResult = const CameraSuccess(null);
+        }
+        if (recordingResult != null && recordingResult is! CameraSuccess) {
+          final verified = await verifyAfterTimeout<bool>(
+            fetchCurrent: () async {
+              if (!preferWan) {
+                final volumeClient = AudioVolumeClient(connection);
+                final result = await volumeClient.isAudioRecordingEnabled();
+                volumeClient.close();
+                if (result is CameraSuccess<bool>) return result;
+              }
+              if (thingName == null) {
+                return const CameraFailure<bool>('no WAN fallback available');
+              }
+              return WanAudioVolumeClient(thingName).isAudioRecordingEnabled();
+            },
+            matchesExpected: (current) => current == _audioRecordingEnabled,
+          );
+          if (verified) recordingResult = const CameraSuccess(null);
+        }
         if (micGainResult != null) results.add(micGainResult);
         if (recordingResult != null) results.add(recordingResult);
       }
@@ -339,7 +378,32 @@ class _AudioScreenState extends State<AudioScreen> {
             'No speaker configuration loaded',
           );
         }
-        results.add(speakerResult);
+        if (speakerResult is CameraSuccess) {
+          results.add(speakerResult);
+        } else {
+          final verified = await verifyAfterTimeout<int>(
+            fetchCurrent: () async {
+              if (!preferWan) {
+                final speakerClient = SpeakerVolumeClient(
+                  connection,
+                  httpClient: CameraNetwork.clientFor(connection.host),
+                  endpoint: CameraNetwork.media2EndpointFor(connection.host),
+                );
+                final result = await speakerClient.getSpeakerVolume();
+                speakerClient.close();
+                if (result is CameraSuccess<SpeakerVolume>) {
+                  return CameraSuccess(result.value.outputLevel);
+                }
+              }
+              if (thingName == null) {
+                return const CameraFailure<int>('no WAN fallback available');
+              }
+              return WanSpeakerVolumeClient(thingName).getSpeakerVolume();
+            },
+            matchesExpected: (current) => current == _speakerVolume.round(),
+          );
+          results.add(verified ? const CameraSuccess(null) : speakerResult);
+        }
       }
       succeeded = results.every((r) => r is CameraSuccess);
     } else {
