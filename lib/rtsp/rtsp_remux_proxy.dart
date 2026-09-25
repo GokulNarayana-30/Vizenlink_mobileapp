@@ -114,6 +114,31 @@ class RtspRemuxProxy {
         'DESCRIBE succeeded but no SPS/PPS was parsed from the SDP',
       );
     }
+    final isHevc = _rtsp!.videoCodec == VideoCodec.h265;
+    if (isHevc && _rtsp!.vps == null) {
+      // A recorded clip's SDP normally carries VPS, so this is only reached
+      // if the server ever omits it — then it can only arrive in-band, and
+      // the RTP read loop has to be running to see it. Start it early, ahead
+      // of the usual startReading() below. Deliberately does NOT attach
+      // _accessUnitSub yet: `accessUnits` is a broadcast controller that
+      // drops adds when nothing is listening, which is what we want — any
+      // access unit arriving during this wait is one no HTTP client could
+      // have received anyway, and it keeps the first-access-unit
+      // forced-keyframe override landing on the first unit the real
+      // listener actually processes.
+      _rtsp!.startReading();
+      final deadline = DateTime.now().add(const Duration(seconds: 10));
+      while (_rtsp!.vps == null && DateTime.now().isBefore(deadline)) {
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
+      if (_rtsp!.vps == null) {
+        await _rtsp!.close();
+        throw RtspReplayException(
+          'H.265 clip but no VPS in the SDP or in-band within 10s',
+        );
+      }
+    }
+
     final dims = _parseSpsDimensions(sps) ?? (width: 2560, height: 1440);
     // 2026-09-02, `FR-MOB-114` audio playback: RtspReplaySession.hasAudio is only ever true when
     // playback_demuxer_bind.c's prvPopulateAudioInfoFromDemuxer() found a real, supported audio
@@ -123,6 +148,8 @@ class RtspRemuxProxy {
       pps: pps,
       width: dims.width,
       height: dims.height,
+      videoCodec: _rtsp!.videoCodec,
+      vps: isHevc ? _rtsp!.vps : null,
       audioSpecificConfig: _rtsp!.hasAudio ? _rtsp!.audioSpecificConfig : null,
       audioSampleRate: _rtsp!.hasAudio ? _rtsp!.audioSampleRate : null,
       audioChannelCount: _rtsp!.hasAudio ? _rtsp!.audioChannelCount : null,

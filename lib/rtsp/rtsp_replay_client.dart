@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:camera_api/camera_api.dart' show VideoCodec;
 import 'package:crypto/crypto.dart' show md5;
 import 'package:flutter/foundation.dart' show debugPrint;
 
@@ -108,6 +109,27 @@ class RtspReplaySession {
   /// own top-level doc).
   Uint8List? sps;
   Uint8List? pps;
+
+  /// Detected from the DESCRIBE SDP's `a=rtpmap:<pt>` line for the video
+  /// track. Defaults to [VideoCodec.h264] until DESCRIBE actually runs.
+  ///
+  /// This camera records some clips as H.265, and the failure without this is
+  /// silent and total: an H.265 clip's SDP carries `sprop-vps=`/`sprop-sps=`/
+  /// `sprop-pps=` and no `sprop-parameter-sets`, so an H.264-only [_parseSdp]
+  /// throws and the whole clip reports as "no recording available" even
+  /// though it is right there on the camera.
+  VideoCodec videoCodec = VideoCodec.h264;
+
+  /// The video track's RTP payload type from the SDP's `m=video` line — this
+  /// camera uses 96 today, but [_handleRtpPacket] checks this rather than
+  /// hardcoding it.
+  int? _videoPayloadType;
+
+  /// H.265 only. Unlike live view, a recorded clip's SDP advertises VPS up
+  /// front (a demuxed clip's sample data has no in-band VPS to fall back on),
+  /// so this is normally set by [_parseSdp]. If the server ever omits it, it
+  /// stays null until [_emitOrCaptureH265Nalu] captures an in-band one.
+  Uint8List? vps;
 
   /// 2026-09-02, `FR-MOB-114` audio playback. Populated by [_parseSdp] only when the SDP's
   /// `m=audio` section is present (i.e. this clip actually has audio -- see
@@ -349,14 +371,22 @@ class RtspReplaySession {
 
   void _handleRtpPacket(Uint8List packet) {
     if (packet.length < 12) return;
-    final marker = (packet[1] & 0x80) != 0;
     final payloadType = packet[1] & 0x7F;
-    if (payloadType != 96) return; // matches SDP a=rtpmap:96 H264/90000
+    if (payloadType != (_videoPayloadType ?? 96)) return;
     final timestamp =
-        (packet[4] << 24) | (packet[5] << 16) | (packet[6] << 8) | packet[7];
+        ((packet[4] << 24) | (packet[5] << 16) | (packet[6] << 8) | packet[7]) &
+        0xFFFFFFFF;
     final rtpPayload = packet.sublist(12);
     if (rtpPayload.isEmpty) return;
 
+    if (videoCodec == VideoCodec.h265) {
+      _handleH265RtpPayload(rtpPayload, timestamp);
+    } else {
+      _handleH264RtpPayload(rtpPayload, timestamp);
+    }
+  }
+
+  void _handleH264RtpPayload(Uint8List rtpPayload, int timestamp) {
     final nalHeader = rtpPayload[0];
     final nalType = nalHeader & 0x1F;
 
@@ -387,7 +417,7 @@ class RtspReplaySession {
         return;
       }
       if (end && _fuBuffer != null) {
-        _emitAccessUnit(_fuBuffer!, timestamp, _fuIsKeyframe ?? false);
+        _emitH264AccessUnit(_fuBuffer!, timestamp, _fuIsKeyframe ?? false);
         _fuBuffer = null;
         _fuTimestamp = null;
       }
@@ -396,16 +426,100 @@ class RtspReplaySession {
 
     if (nalType >= 1 && nalType <= 23) {
       // Single NAL unit packet -- the whole RTP payload is the NALU, unmodified.
-      _emitAccessUnit(rtpPayload, timestamp, nalType == 5);
+      _emitH264AccessUnit(rtpPayload, timestamp, nalType == 5);
       return;
     }
 
     // STAP-A/STAP-B/MTAP etc. -- not sent by this camera (see class doc); ignore rather than
     // misinterpret as a bare NALU.
-    if (!marker) return;
   }
 
-  void _emitAccessUnit(Uint8List nalu, int timestamp, bool isKeyframe) {
+  /// RFC 7798 §4.4.3 FU reassembly + §4.4.1 single-NALU passthrough for
+  /// H.265. HEVC's NAL header is 2 bytes (vs H.264's 1) and its FU framing
+  /// differs structurally: a 2-byte PayloadHdr (`nal_unit_type` = 49) followed
+  /// by a separate 1-byte FU header (S/E bits + 6-bit FuType), reconstructed
+  /// back into a real 2-byte NAL header.
+  void _handleH265RtpPayload(Uint8List rtpPayload, int timestamp) {
+    if (rtpPayload.length < 2) return;
+    final payloadHdr0 = rtpPayload[0];
+    final payloadHdr1 = rtpPayload[1];
+    final nalType = (payloadHdr0 >> 1) & 0x3F;
+
+    if (nalType == 49) {
+      if (rtpPayload.length < 3) return;
+      final fuHeader = rtpPayload[2];
+      final start = (fuHeader & 0x80) != 0;
+      final end = (fuHeader & 0x40) != 0;
+      final fuType = fuHeader & 0x3F;
+      final fragment = rtpPayload.sublist(3);
+      if (start) {
+        final reconstructedByte0 = (payloadHdr0 & 0x81) | (fuType << 1);
+        final builder = BytesBuilder()
+          ..addByte(reconstructedByte0)
+          ..addByte(payloadHdr1)
+          ..add(fragment);
+        _fuBuffer = builder.toBytes();
+        _fuTimestamp = timestamp;
+        _fuIsKeyframe = fuType >= 19 && fuType <= 21;
+      } else if (_fuBuffer != null && _fuTimestamp == timestamp) {
+        final builder = BytesBuilder()
+          ..add(_fuBuffer!)
+          ..add(fragment);
+        _fuBuffer = builder.toBytes();
+      } else {
+        // Missing the start fragment (packet loss) -- drop this partial
+        // reassembly rather than emit a corrupt NALU.
+        _fuBuffer = null;
+        return;
+      }
+      if (end && _fuBuffer != null) {
+        _emitOrCaptureH265Nalu(_fuBuffer!, timestamp, _fuIsKeyframe ?? false);
+        _fuBuffer = null;
+        _fuTimestamp = null;
+      }
+      return;
+    }
+
+    if (nalType <= 47) {
+      // Single NALU packet (48 = Aggregation, 49 = FU, 50 = PACI, none of
+      // which this camera sends). 19-21 = IDR_W_RADL/IDR_N_LP/CRA_NUT.
+      _emitOrCaptureH265Nalu(
+        rtpPayload,
+        timestamp,
+        nalType >= 19 && nalType <= 21,
+      );
+    }
+  }
+
+  /// H.265 counterpart of [_emitH264AccessUnit] — VPS(32) is captured into
+  /// [vps] rather than discarded (in case the SDP omitted it), and
+  /// SPS(33)/PPS(34)/AUD(35)/SEI(39/40) are filtered the same defensive way
+  /// H.264's 6/7/8/9 are.
+  void _emitOrCaptureH265Nalu(Uint8List nalu, int timestamp, bool isKeyframe) {
+    if (nalu.length < 2) return;
+    final nalType = (nalu[0] >> 1) & 0x3F;
+    if (nalType == 32) {
+      vps ??= nalu;
+      return;
+    }
+    if (nalType == 33 ||
+        nalType == 34 ||
+        nalType == 35 ||
+        nalType == 39 ||
+        nalType == 40) {
+      return;
+    }
+    if (accessUnits.isClosed) return;
+    accessUnits.add(
+      H264AccessUnit(
+        nalu: nalu,
+        rtpTimestamp90k: timestamp,
+        isKeyframe: isKeyframe,
+      ),
+    );
+  }
+
+  void _emitH264AccessUnit(Uint8List nalu, int timestamp, bool isKeyframe) {
     if (accessUnits.isClosed) return;
     // Defensive filter, matching standard fMP4-muxer practice: an in-band parameter-set/AUD/SEI
     // NALU (types 6/7/8/9) should never reach mdat -- SPS/PPS are already in the init segment's
@@ -435,7 +549,8 @@ class RtspReplaySession {
     final payloadType = packet[1] & 0x7F;
     if (_audioPayloadType == null || payloadType != _audioPayloadType) return;
     final timestamp =
-        (packet[4] << 24) | (packet[5] << 16) | (packet[6] << 8) | packet[7];
+        ((packet[4] << 24) | (packet[5] << 16) | (packet[6] << 8) | packet[7]) &
+        0xFFFFFFFF;
     final rtpPayload = packet.sublist(12);
     if (rtpPayload.length < 2) return;
 
@@ -648,16 +763,51 @@ class RtspReplaySession {
   /// section, if present, for `FR-MOB-114` audio playback (2026-09-02) -- see `hasAudio`'s own
   /// doc comment for when the server omits it entirely.
   void _parseSdp(String sdp) {
-    final fmtpMatch = RegExp(
-      r'sprop-parameter-sets=([A-Za-z0-9+/=]+),([A-Za-z0-9+/=]+)',
-    ).firstMatch(sdp);
-    if (fmtpMatch == null) {
-      throw RtspReplayException(
-        'DESCRIBE SDP has no sprop-parameter-sets -- cannot build avcC',
-      );
+    final videoMatch = RegExp(r'm=video \d+ RTP/AVP (\d+)').firstMatch(sdp);
+    if (videoMatch == null) {
+      throw RtspReplayException('DESCRIBE SDP has no m=video line');
     }
-    sps = base64.decode(_padBase64(fmtpMatch.group(1)!));
-    pps = base64.decode(_padBase64(fmtpMatch.group(2)!));
+    _videoPayloadType = int.parse(videoMatch.group(1)!);
+    final videoRtpmapMatch = RegExp(
+      'a=rtpmap:$_videoPayloadType (H264|H265)/90000',
+    ).firstMatch(sdp);
+    videoCodec = videoRtpmapMatch?.group(1) == 'H265'
+        ? VideoCodec.h265
+        : VideoCodec.h264;
+
+    // Unlike live view, a recorded clip's H.265 SDP advertises real RFC 7798
+    // sprop-vps=/sprop-sps=/sprop-pps= attributes — a demuxed clip's sample
+    // data has no in-band VPS to fall back on the way a live re-encode does,
+    // so playback's SDP gives the client everything up front. Try that first
+    // for H.265, then fall back to the shared sprop-parameter-sets
+    // convention (always H.264, and a defensive fallback for H.265 if the
+    // server ever omits VPS — [vps] then stays null until the RTP layer
+    // captures one).
+    final vpsMatch = videoCodec == VideoCodec.h265
+        ? RegExp(r'sprop-vps=([A-Za-z0-9+/=]+)').firstMatch(sdp)
+        : null;
+    final spsAttrMatch = videoCodec == VideoCodec.h265
+        ? RegExp(r'sprop-sps=([A-Za-z0-9+/=]+)').firstMatch(sdp)
+        : null;
+    final ppsAttrMatch = videoCodec == VideoCodec.h265
+        ? RegExp(r'sprop-pps=([A-Za-z0-9+/=]+)').firstMatch(sdp)
+        : null;
+    if (vpsMatch != null && spsAttrMatch != null && ppsAttrMatch != null) {
+      vps = base64.decode(_padBase64(vpsMatch.group(1)!));
+      sps = base64.decode(_padBase64(spsAttrMatch.group(1)!));
+      pps = base64.decode(_padBase64(ppsAttrMatch.group(1)!));
+    } else {
+      final fmtpMatch = RegExp(
+        r'sprop-parameter-sets=([A-Za-z0-9+/=]+),([A-Za-z0-9+/=]+)',
+      ).firstMatch(sdp);
+      if (fmtpMatch == null) {
+        throw RtspReplayException(
+          'DESCRIBE SDP has no sprop-parameter-sets -- cannot build avcC/hvcC',
+        );
+      }
+      sps = base64.decode(_padBase64(fmtpMatch.group(1)!));
+      pps = base64.decode(_padBase64(fmtpMatch.group(2)!));
+    }
 
     // "m=audio 0 RTP/AVP 97" -> payload type 97. Only ever present when
     // playback_demuxer_bind.c's prvPopulateAudioInfoFromDemuxer() found a real, supported audio
