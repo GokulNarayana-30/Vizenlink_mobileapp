@@ -3804,7 +3804,10 @@ class _PlaybackTabState extends State<_PlaybackTab> {
     // and again if the transport later flips.
     if (widget.isWan != oldWidget.isWan) {
       unawaited(_closeCurrentClip());
-      _loadDatesWithRecordings();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _loadDatesWithRecordings();
+      });
       return;
     }
     final becameActive = widget.isActive && !oldWidget.isActive;
@@ -4004,12 +4007,31 @@ class _PlaybackTabState extends State<_PlaybackTab> {
   Future<_ClipSession?> _openLanClipSession(
     RecordingClip clip, {
     required int? seekTo,
+    required int requestId,
   }) async {
     final replayControl = _replayControl;
     final connection = widget.connection;
     if (replayControl == null || connection == null) return null;
 
-    final uriResult = await replayControl.getReplayUri(clip.id.toString());
+    // This camera hosts exactly one recorded-clip playback session at a time
+    // and answers a second `GetReplayUri` with `HTTP 409 ter:PlaybackBusy`
+    // ("A recorded-clip playback session is already in progress"). The
+    // previous session is released before this runs, but the camera can take
+    // a beat to actually free its slot after the RTSP TEARDOWN, so a busy
+    // answer is retried briefly rather than treated as "no recording".
+    var uriResult = await replayControl.getReplayUri(clip.id.toString());
+    for (var attempt = 1; attempt <= 5; attempt++) {
+      final busy =
+          uriResult is CameraFailure<String> &&
+          uriResult.reason.contains('PlaybackBusy');
+      if (!busy || !mounted || requestId != _openClipRequestId) break;
+      _logPlayback(
+        '_openClip(${clip.id}): camera reports PlaybackBusy, retry $attempt/5',
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      if (!mounted || requestId != _openClipRequestId) return null;
+      uriResult = await replayControl.getReplayUri(clip.id.toString());
+    }
     final String replayUri;
     switch (uriResult) {
       case CameraSuccess(:final value):
@@ -4058,7 +4080,9 @@ class _PlaybackTabState extends State<_PlaybackTab> {
     // holds before asking for another, or the new Start replaces a session
     // this app has already forgotten about.
     await control.stop();
-    final startMs = seekTo == null ? 0 : (seekTo - clip.start) * 1000;
+    final startMs = seekTo == null
+        ? 0
+        : (seekTo > clip.start ? (seekTo - clip.start) * 1000 : 0);
     final startResult = await control.startClip(clip.id, startMs: startMs);
     if (startResult is! CameraSuccess<void>) {
       _logPlayback('_openClip(${clip.id}): StartClipPlayback failed');
@@ -4083,14 +4107,67 @@ class _PlaybackTabState extends State<_PlaybackTab> {
     return _WanClipSession(control, media);
   }
 
+  /// Opens run strictly one at a time. The camera hosts a single playback
+  /// session, so two overlapping opens (rapid forward/seek taps, or an
+  /// auto-advance landing on a tap) would race each other for that one slot
+  /// and the loser gets `PlaybackBusy`. A queued open that has already been
+  /// superseded by a newer request drops out without touching the camera, so
+  /// a burst of taps collapses into just the latest one.
+  Future<void> _openClipQueue = Future<void>.value();
+
   Future<void> _openClip(
     RecordingClip clip, {
     required int? seekToEpochSeconds,
-  }) async {
+  }) {
+    // Claimed synchronously, before queueing, so callers' guards on
+    // [_pendingClipId] and the request-id checks below see this request
+    // immediately.
     final requestId = ++_openClipRequestId;
     _pendingClipId = clip.id;
     if (widget.isActive) {
       widget.onClipStateChanged(null, _PlaybackAvailability.loading);
+    }
+    final run = _openClipQueue.then(
+      (_) => _runOpenClip(
+        clip,
+        requestId: requestId,
+        seekToEpochSeconds: seekToEpochSeconds,
+      ),
+    );
+    _openClipQueue = run.catchError((Object _) {});
+    return run;
+  }
+
+  Future<void> _runOpenClip(
+    RecordingClip clip, {
+    required int requestId,
+    required int? seekToEpochSeconds,
+  }) async {
+    if (!mounted || requestId != _openClipRequestId) return;
+
+    // Release whatever is playing *before* asking the camera for another
+    // session. This camera allows exactly one recorded-clip playback session
+    // at a time and answers a second `GetReplayUri` with `HTTP 409
+    // ter:PlaybackBusy` — which this method reported as "No recording
+    // available" for every forward/seek after the first open (the first open
+    // worked only because nothing was holding the slot yet). Opening the new
+    // session first and tearing the old one down afterwards was deliberate —
+    // it fixed an earlier bug where the wrong session got torn down — but it
+    // assumed the camera could host both at once. Teardown-first is what the
+    // sibling `nuraeye-rt` app does too (`_teardownPlayback` then
+    // `_startPlaybackAt`), and it is safe here because it runs before any new
+    // session is assigned to the fields, so it can only ever close the old one.
+    if (_clipController != null || _clipSession != null) {
+      // The parent was told (in `_openClip`) that there is no controller now;
+      // give it a frame to drop the one it was rendering before disposing it.
+      if (widget.isActive) {
+        await WidgetsBinding.instance.endOfFrame.timeout(
+          const Duration(milliseconds: 300),
+          onTimeout: () {},
+        );
+      }
+      await _closeCurrentClip();
+      if (!mounted || requestId != _openClipRequestId) return;
     }
 
     final seekTo = seekToEpochSeconds != null && seekToEpochSeconds > clip.start
@@ -4099,7 +4176,7 @@ class _PlaybackTabState extends State<_PlaybackTab> {
     final sessionStart = seekTo ?? clip.start;
     final session = _useWan
         ? await _openWanClipSession(clip, seekTo: seekTo)
-        : await _openLanClipSession(clip, seekTo: seekTo);
+        : await _openLanClipSession(clip, seekTo: seekTo, requestId: requestId);
 
     if (!mounted || requestId != _openClipRequestId) {
       await session?.stop();
