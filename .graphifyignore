@@ -1,0 +1,19 @@
+# Staging only, not part of the app build — it holds a full duplicate copy of
+# packages/camera_api, so indexing it double-counts every client symbol and
+# makes queries return the staging copy as often as the real one.
+client_code_inbox/
+
+# Generated platform runner scaffolding from `flutter create`. Not app logic —
+# and it actively distorts the graph: Win32Window ranked as a top-8
+# architectural hub in the first build, which is meaningless for this app.
+windows/
+linux/
+macos/
+web/
+android/
+ios/
+
+# Build output and the graph's own artifacts.
+build/
+graphify-out/
+.dart_tool/
