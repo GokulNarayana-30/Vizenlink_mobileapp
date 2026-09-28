@@ -38,6 +38,10 @@ class RecordingsClient {
   }
 
   /// [start]/[end] are UTC epoch seconds (inclusive); omit either for no bound on that side.
+  /// **A single call can silently omit newer clips** if the camera has accumulated enough
+  /// history — see [RecordingsList.truncated]'s own doc. Prefer [getAllRecordings] unless a
+  /// caller has a specific reason to see only one page (e.g. probing whether *any* clip exists
+  /// in a narrow range).
   Future<CameraResult<RecordingsList>> getRecordings({
     int? start,
     int? end,
@@ -53,6 +57,70 @@ class RecordingsClient {
       CameraFailure(:final reason) => CameraFailure<RecordingsList>(reason),
       CameraTimeout() => const CameraTimeout<RecordingsList>(),
     };
+  }
+
+  /// Pages through [getRecordings] automatically, advancing `start` to `<last clip's start> + 1`
+  /// each time [RecordingsList.truncated] comes back `true`, until a page reports `truncated:
+  /// false` or [maxPages] is reached. Real bug found 2026-09-24: `RecordingsScreen` and
+  /// `RecordingTimelineScreen` both called the single-page [getRecordings] directly and never
+  /// checked `truncated` at all, so a camera with enough history silently hid every clip newer
+  /// than whatever filled the first response's JSON buffer (~70-80 clips in practice) — including,
+  /// misleadingly, freshly-recorded scheduled-mode clips, which made a fully-working scheduled
+  /// recording feature look broken. [end] is not paginated (a single response already includes
+  /// every clip up to it or truncates before reaching it — advancing only ever needs to move
+  /// `start` forward); pass [end] only to bound the *upper* edge of what's fetched, same as
+  /// [getRecordings].
+  ///
+  /// [maxPages] bounds worst-case work against a heavily-populated card — the returned
+  /// [RecordingsList.truncated] is `true` only if this cap was hit before the camera itself
+  /// reported a clean, un-truncated final page (real "there might be even more" signal), not
+  /// simply because more than one request was needed.
+  Future<CameraResult<RecordingsList>> getAllRecordings({
+    int? start,
+    int? end,
+    int maxPages = 20,
+    Duration timeout = const Duration(seconds: 10),
+  }) async {
+    final clips = <RecordingClip>[];
+    var pageStart = start;
+    bool storageAvailable = false;
+    bool cardPresent = false;
+    var pagesFetched = 0;
+    while (true) {
+      final result = await getRecordings(start: pageStart, end: end, timeout: timeout);
+      switch (result) {
+        case CameraSuccess(:final value):
+          storageAvailable = value.storageAvailable;
+          cardPresent = value.cardPresent;
+          clips.addAll(value.clips);
+          pagesFetched++;
+          if (!value.truncated || value.clips.isEmpty) {
+            return CameraSuccess(
+              RecordingsList(
+                storageAvailable: storageAvailable,
+                cardPresent: cardPresent,
+                truncated: false,
+                clips: clips,
+              ),
+            );
+          }
+          if (pagesFetched >= maxPages) {
+            return CameraSuccess(
+              RecordingsList(
+                storageAvailable: storageAvailable,
+                cardPresent: cardPresent,
+                truncated: true,
+                clips: clips,
+              ),
+            );
+          }
+          pageStart = value.clips.map((c) => c.start).reduce((a, b) => a > b ? a : b) + 1;
+        case CameraFailure(:final reason):
+          return CameraFailure<RecordingsList>(reason);
+        case CameraTimeout():
+          return const CameraTimeout<RecordingsList>();
+      }
+    }
   }
 
   /// `FR-NE-119`: the currently-configured recorded-clip duration, in seconds. Build UI bounds

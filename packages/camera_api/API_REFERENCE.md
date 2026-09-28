@@ -73,6 +73,7 @@ lib/
         night_vision_client.dart
         privacy_mode_client.dart
         local_storage_client.dart
+        recording_mode_client.dart
         health_client.dart
         recordings_client.dart
         snapshot_client.dart
@@ -109,6 +110,7 @@ lib/
       wan_osd_client.dart
       wan_preview_snapshot_client.dart
       wan_local_storage_client.dart
+      wan_recording_mode_client.dart
       wan_health_client.dart
       wan_privacy_mode_client.dart
       wan_speaker_volume_client.dart
@@ -154,6 +156,7 @@ network as the camera.
     - [NightVisionClient](#nightvisionclient)
     - [PrivacyModeClient](#privacymodeclient)
     - [LocalStorageClient](#localstorageclient)
+    - [RecordingModeClient](#recordingmodeclient)
     - [HealthClient](#healthclient)
     - [RecordingsClient](#recordingsclient)
     - [SnapshotClient](#snapshotclient)
@@ -166,6 +169,7 @@ network as the camera.
   - [WanAuth](#wanauth)
   - [IotCommandClient](#iotcommandclient)
   - [KvsMediaViewerCredentialsClient](#kvsmediaviewercredentialsclient)
+  - [KvsGetMediaClient](#kvsgetmediaclient)
   - [KvsMediaLiveViewSession](#kvsmedialiveviewsession)
   - [WanLiveViewClient / AwsWanLiveViewClient](#wanliveviewclient--awswanliveviewclient)
   - [WanAudioVolumeClient](#wanaudiovolumeclient)
@@ -184,6 +188,7 @@ network as the camera.
   - [WanNightVisionClient](#wannightvisionclient)
   - [WanOsdClient](#wanosdclient)
   - [WanLocalStorageClient](#wanlocalstorageclient)
+  - [WanRecordingModeClient](#wanrecordingmodeclient)
   - [WanHealthClient](#wanhealthclient)
   - [WanRecordingsClient](#wanrecordingsclient)
   - [WanClipPlaybackClient](#wanclipplaybackclient)
@@ -290,12 +295,19 @@ trusts the camera's self-signed certificate and preserves outgoing HTTP header c
 camera's embedded server matches header names case-sensitively).
 
 **Every client's `_post()` checks the response body for a SOAP `<Fault>` element via
-`soap_fault.dart`'s `soapFaultReason()`, in addition to the HTTP status code.** This camera's
-firmware doesn't always return a non-200 status for a fault — Media2 validation errors (e.g.
-`SetOSD` rejecting an out-of-range color via `ter:InvalidArgVal`) come back as `HTTP 200` with a
-`<s:Fault>` body, which an HTTP-status-only check would silently treat as success. Any new ONVIF
-client added to this section must call `soapFaultReason(response.body)` the same way, right
-after the HTTP-status check and before parsing the expected success shape.
+`soap_fault.dart`'s `soapFaultReason()`, *before* checking the HTTP status code, not after.**
+This camera's firmware doesn't use one consistent HTTP status for a fault, in either direction —
+Media2 validation errors (e.g. `SetOSD` rejecting an out-of-range color via `ter:InvalidArgVal`)
+come back as `HTTP 200` with a `<s:Fault>` body, which an HTTP-status-only check would silently
+treat as success; other faults (e.g. `GetReplayUri`'s `OperationProhibited`/409 rejection of a
+second concurrent playback client) come back on a genuinely non-200 status *with* a real
+`<Fault>` body. **Real bug, found and fixed 2026-09-24 across all 11 clients in this section**:
+every one of them checked HTTP status first and returned the raw, unparsed SOAP XML as the error
+string for the second case — surfacing as a raw SOAP response dumped straight into a screen's
+error text instead of a real message. Any new ONVIF client added to this section must call
+`soapFaultReason(response.body)` first, and only fall back to a raw `HTTP <code>: <body>` failure
+message once that returns `null` (a genuinely non-SOAP failure, e.g. a proxy's own 502/503 HTML
+page) — see `soap_fault.dart`'s own doc comment for the full reasoning.
 
 ### OnvifDeviceClient
 
@@ -592,7 +604,7 @@ OnvifReplayControlClient(CameraConnection connection, {http.Client? httpClient})
 | Method | Params | Returns | Description |
 |---|---|---|---|
 | `getServiceCapabilities` | `{Duration timeout}` | `CameraResult<ReplayServiceCapabilities>` | `ReversePlayback`/`RTP_RTSP_TCP` plus `sessionTimeoutSeconds` — reported as a single plain-integer-seconds value on this device, not the WSDL's `tt:FloatRange` min/max pair. |
-| `getReplayUri` | `String recordingToken, {Duration timeout}` | `CameraResult<String>` | Resolves a `RecordingToken` (same identity as `OnvifRecordingClient`/`OnvifSearchClient`) to a playable `rtsp://`/`rtsps://` URI on the camera's dedicated playback port. `CameraFailure` (SOAP fault, not a generic error) when the token doesn't resolve to an existing clip. |
+| `getReplayUri` | `String recordingToken, {Duration timeout}` | `CameraResult<String>` | Resolves a `RecordingToken` (same identity as `OnvifRecordingClient`/`OnvifSearchClient`) to a playable `rtsp://`/`rtsps://` URI on the camera's dedicated playback port. `CameraFailure` (SOAP fault, not a generic error) when the token doesn't resolve to an existing clip, **or** when a playback session is already active — this device rejects a second concurrent playback client rather than evicting the first (HTTP 409, `ter:OperationProhibited`/`ter:PlaybackBusy`; `onvif_replaycontrol.c`'s `GetReplayUri` handler). The `CameraFailure.reason` text for the busy case is `"A recorded-clip playback session is already in progress on this device. Try again once it ends."` (`onvif_fault.c`'s `OnvifFaultSubCodeEx_PlaybackBusy`, added 2026-09-24) — safe to show directly to the user, no client-side translation needed. |
 | `close` | — | `void` | Closes the underlying HTTP client. |
 
 ---
@@ -925,6 +937,22 @@ LocalStorageClient(NuraeyeClient nuraeye)
 
 See `wan/wan_local_storage_client.dart`'s `WanLocalStorageClient` for the WAN counterpart.
 
+#### RecordingModeClient
+
+`lan/nuraeye/recording_mode_client.dart` — LAN transport for local recording mode selection
+(`FR-CF-046`/`FR-NE-088`/`FR-MOB-084`-`088`): Continuous / Scheduled / Event-Triggered.
+
+```dart
+RecordingModeClient(NuraeyeClient nuraeye)
+```
+
+| Method | Params | Returns | Description |
+|---|---|---|---|
+| `getMode` | `{Duration timeout}` | `CameraResult<RecordingModeStatus>` | Current mode, its schedule (empty unless `mode` is `scheduled`), and `eventTriggerSourceConfigured` (`FR-CF-047` — only meaningful for `eventTriggered`). |
+| `setMode` | `RecordingMode mode, {List<RecordingScheduleWindow> schedule, Duration timeout}` | `CameraResult<void>` | `schedule` is sent only when `mode` is `scheduled`. **The camera rejects a `mode` not in this SKU's `supportedRecordingModes`, or an invalid schedule** (`500`) — check `CameraCapabilities.supportedRecordingModes` before calling rather than relying on the rejection alone. |
+
+See `wan/wan_recording_mode_client.dart`'s `WanRecordingModeClient` for the WAN counterpart.
+
 #### HealthClient
 
 `lan/nuraeye/health_client.dart` — LAN transport for camera health/vitals (`FR-HLT-009`, Stage 3
@@ -937,7 +965,7 @@ HealthClient(NuraeyeClient nuraeye)
 
 | Method | Params | Returns | Description |
 |---|---|---|---|
-| `getHealth` | `{Duration timeout}` | `CameraResult<HealthStatus>` | `rebootCount`, `lastRebootUtc` (UTC epoch seconds; `0` = not yet corrected this boot), `uptimeSeconds`, `clockSyncState` (`ClockSyncState.synced`/`.uncertain`), `uncertainSince` (UTC epoch seconds; `0` if synced), `firmwareVersion` (duplicates `OnvifDeviceClient.getDeviceInformation()`'s value). A reboot-loop flag and AI-model version are `FR-HLT-009`'s remaining, unimplemented scope; last-recording-segment timestamp isn't implemented either. |
+| `getHealth` | `{Duration timeout}` | `CameraResult<HealthStatus>` | `rebootCount`, `lastRebootUtc` (UTC epoch seconds; `0` = not yet corrected this boot), `rebootReason` (why the current boot happened, e.g. `"Firmware Upgrade"`/`"Factory Reset"`/`"HTTP Server Failure"`/`"Unknown / Crash"` — `BUG-048`, free text not a closed enum, empty on older firmware), `uptimeSeconds`, `clockSyncState` (`ClockSyncState.synced`/`.uncertain`), `uncertainSince` (UTC epoch seconds; `0` if synced), `firmwareVersion` (duplicates `OnvifDeviceClient.getDeviceInformation()`'s value). A reboot-loop flag and AI-model version are `FR-HLT-009`'s remaining, unimplemented scope; last-recording-segment timestamp isn't implemented either. |
 
 See `wan/wan_health_client.dart`'s `WanHealthClient` for the WAN counterpart.
 
@@ -955,7 +983,8 @@ RecordingsClient(NuraeyeClient nuraeye)
 
 | Method | Params | Returns | Description |
 |---|---|---|---|
-| `getRecordings` | `{int? start, int? end, Duration timeout}` | `CameraResult<RecordingsList>` | Lists clips, optionally scoped to a UTC-epoch-seconds time range. `RecordingsList.storageAvailable`/`cardPresent` distinguish capability/presence from a genuinely empty range — mirrors `LocalStorageStatus`'s own split. |
+| `getRecordings` | `{int? start, int? end, Duration timeout}` | `CameraResult<RecordingsList>` | Lists clips, optionally scoped to a UTC-epoch-seconds time range. `RecordingsList.storageAvailable`/`cardPresent` distinguish capability/presence from a genuinely empty range — mirrors `LocalStorageStatus`'s own split. **Single page only** — see `RecordingsList.truncated`'s doc; prefer `getAllRecordings` unless you specifically want just the oldest-first first page. |
+| `getAllRecordings` | `{int? start, int? end, int maxPages = 20, Duration timeout}` | `CameraResult<RecordingsList>` | Pages through `getRecordings` automatically (`start = <last clip's start> + 1` each time `truncated` comes back `true`) until a page is clean or `maxPages` is hit. Added 2026-09-24 after a real bug: `RecordingsScreen`/`RecordingTimelineScreen` both called the single-page `getRecordings` directly and never checked `truncated`, so a camera with enough history silently hid every newer clip (including fresh scheduled-mode recordings) behind however many old ones filled the first response's JSON buffer (~70-80 in practice). Use this for any screen that needs a *complete* list; `getRecordings` remains correct for a narrow probe (e.g. "does anything exist in this exact range") or for finding the *oldest* clip specifically (`RecordingModeSettingsScreen`'s backlog estimate — truncation only ever cuts the newer tail, since the camera returns oldest-first). |
 | `getClipDuration` | `{Duration timeout}` | `CameraResult<int>` | Currently-configured recorded-clip duration, in seconds (`FR-NE-119`). |
 | `setClipDuration` | `int seconds, {Duration timeout}` | `CameraResult<void>` | Applies for the *next* clip rotation only — the segment currently being written keeps its original length. Rejected (`400`) outside `CameraCapabilities.recordingClipDurationMinSeconds`/`MaxSeconds` — check those bounds before calling. |
 | `clipUri` | `int clipId` | `Uri` | The `GET /nuraeye/recordings/{id}/clip` URI for a clip (its `RecordingClip.id`). Supports HTTP `Range` requests for seeking — pass straight to `VideoPlayerController.networkUrl`. |
@@ -1213,11 +1242,34 @@ KvsMediaViewerCredentialsClient({http.Client? client, String? Function()? idToke
 |---|---|---|---|
 | `getCredentials` | `String streamName` | `Future<KvsMediaViewerCredentials>` | Returns `{accessKeyId, secretAccessKey, sessionToken, expiration, region, dataEndpoint}` — the Lambda resolves the `GetMedia` data-plane endpoint itself using the minted credentials, so the caller never needs a separate `GetDataEndpoint` round trip. Throws on failure. `streamName` is `<thing_name>-<quality>` (`high`/`medium`/`low`, all three suffixed — same `FR-CF-154` convention as before), normally built for you via `WanLiveViewClient.startMediaSession(quality)`. `KvsMediaViewerCredentials.isExpiringSoon({margin})` tells a caller to refresh before an actual `AccessDenied`. **Cloud/hardware-verified end-to-end** for both H.264 and H.265 (`testing_utilities/kvs_media_viewer_credentials_test.py`, 4/4 PASS each) — see `kb/raw/2026-09-17-code-kvs-media-viewer-credential-vending.md`. |
 
+### KvsGetMediaClient
+
+`wan/kvs_media/kvs_get_media_client.dart` — calls AWS KVS's `GetMedia` directly (`POST
+/getMedia` on the per-stream data endpoint from
+[KvsMediaViewerCredentialsClient](#kvsmediaviewercredentialsclient), SigV4-signed via
+`AwsSigV4.signJsonPost`) and returns the raw response as an unbounded byte stream. **Internal
+implementation detail, not called directly by any screen** —
+[KvsMediaLiveViewSession](#kvsmedialiveviewsession) below is
+the real consumer (fetches credentials, opens this connection, demuxes/remuxes the result); this
+entry exists so the class itself has a documented contract, matching every other client in this
+package, even though app code never constructs it directly. Wire format verified directly
+against real `boto3`/`botocore` traffic (a captured real `GetMedia` request/response against a
+fake endpoint) rather than assumed from documentation alone.
+
+```dart
+KvsGetMediaClient({http.Client? client})
+```
+
+| Method | Params | Returns | Description |
+|---|---|---|---|
+| `getMedia` | `{required KvsMediaViewerCredentials credentials, required String streamName}` | `Future<Stream<List<int>>>` | Opens a `GetMedia` connection starting from the live edge (`StartSelectorType: "NOW"` — the only selector this class supports; KVS's other selectors, for archived-fragment playback, aren't used here). Throws on a non-200 response. The returned stream stays open and keeps delivering bytes for as long as the camera keeps streaming — there is no natural end-of-stream for a live session; the caller must cancel its subscription (or call `close()`) to end the connection. |
+| `close` | — | `void` | Closes the underlying HTTP client. |
+
 ### KvsMediaLiveViewSession
 
 `wan/kvs_media/kvs_media_live_view_session.dart` — one WAN playback session: fetches
-`KvsMediaViewerCredentials`, opens a direct signed `POST /getMedia` connection to AWS KVS
-(`kvs_get_media_client.dart`), demuxes the raw MKV stream (`mkv_demuxer.dart`'s `MkvDemuxer`),
+`KvsMediaViewerCredentials`, opens a direct signed `POST /getMedia` connection to AWS KVS via
+[KvsGetMediaClient](#kvsgetmediaclient), demuxes the raw MKV stream (`mkv_demuxer.dart`'s `MkvDemuxer`),
 remuxes it into fMP4, and serves that over a local HTTP loopback server — the WAN counterpart of
 `mobile_app`'s LAN `RtspRemuxProxy`/`RtspLiveViewProxy`, same overall shape (`video_player`/
 ExoPlayer plays the local loopback URL as an ordinary progressive/live fMP4 source).
@@ -1646,6 +1698,21 @@ WanLocalStorageClient(String thingName, {IotCommandClient? iotCommandClient})
 | `getStatus` | `{Duration timeout}` | `CameraResult<LocalStorageStatus>` | Live status. |
 | `setEnabled` | `bool enabled, {Duration timeout}` | `CameraResult<void>` | Same card-present rejection behavior as the LAN client. |
 
+### WanRecordingModeClient
+
+`wan/wan_recording_mode_client.dart` — WAN counterpart to `RecordingModeClient`. Same
+`RecordingModeStatus` type as LAN.
+
+```dart
+WanRecordingModeClient(String thingName, {IotCommandClient? iotCommandClient})
+```
+
+| Method | Params | Returns | Description |
+|---|---|---|---|
+| `getMode` | `{Duration timeout}` | `CameraResult<RecordingModeStatus>` | Same fields as the LAN client. |
+| `setMode` | `RecordingMode mode, {List<RecordingScheduleWindow> schedule, Duration timeout}` | `CameraResult<void>` | Same schedule/rejection behavior as the LAN client. |
+| `getSupportedModes` | `{Duration timeout}` | `CameraResult<List<RecordingMode>>` | `FR-NE-089`/`FR-MOB-088` capability set. Per this app's "Options are LAN-only, with one exception" convention, callers should reach for this only as WAN Set-failure recovery, not a normal load path. |
+
 ### WanRecordingsClient
 
 WAN counterpart of `RecordingsClient` (`FR-CF-152`, commands 80/81) — what the recording
@@ -1771,9 +1838,15 @@ and a WAN client pair share them:
   extension. Shared by `PrivacyModeClient`/`WanPrivacyModeClient`.
 - **`local_storage_types.dart`** — `LocalStorageStatus` (`enabled`, `cardPresent`,
   `capacityBytes`, `freeBytes`). Shared by `LocalStorageClient`/`WanLocalStorageClient`.
-- **`health_types.dart`** — `HealthStatus` (`rebootCount`, `lastRebootUtc`, `uptimeSeconds`,
-  `clockSyncState`, `uncertainSince`, `firmwareVersion`) and `enum ClockSyncState { synced,
-  uncertain }`. Shared by `HealthClient`/`WanHealthClient`.
+- **`recording_mode_types.dart`** — `enum RecordingMode { continuous, scheduled,
+  eventTriggered }` (`.wireValue` getter, `.fromWireValue(String?)` static parser),
+  `RecordingScheduleWindow` (value-equality: `dayOfWeek` `0`-`6`=Sun-Sat, `startMinute`/
+  `endMinute` minutes since local midnight, no overnight wrap), and `RecordingModeStatus`
+  (value-equality: `mode`, `schedule`, `eventTriggerSourceConfigured`). Shared by
+  `RecordingModeClient`/`WanRecordingModeClient`.
+- **`health_types.dart`** — `HealthStatus` (`rebootCount`, `lastRebootUtc`, `rebootReason`,
+  `uptimeSeconds`, `clockSyncState`, `uncertainSince`, `firmwareVersion`) and
+  `enum ClockSyncState { synced, uncertain }`. Shared by `HealthClient`/`WanHealthClient`.
 - **`recordings_types.dart`** — `RecordingClip` (`id`, `start`, `end`, `sizeBytes`, `active`,
   `trigger`) and `RecordingsList` (`storageAvailable`, `cardPresent`, `truncated`, `clips`). LAN
   only for now — `RecordingsClient` is the sole client using these, no WAN counterpart exists

@@ -15,12 +15,22 @@
 ///
 /// This is `FR-HLT-009`'s first slice only — a reboot-loop flag and AI-model version are not
 /// implemented yet, and last-recording-segment timestamp isn't either.
+///
+/// [rebootReason] (`BUG-048` follow-up, added 2026-09-25) is why the CURRENT boot happened —
+/// e.g. `"Firmware Upgrade"`, `"Factory Reset"`, `"HTTP Server Failure"`, `"Manual Reboot"`,
+/// `"WiFi Provisioning"`, `"Sensor Capture Mode Change"`, or `"Unknown / Crash"` for a genuine,
+/// uncontrolled crash/hard-WDT-timeout — the camera has no code path left to run at the moment
+/// of a real crash, so that value isn't detected specially; it's simply what's left over when no
+/// deliberate reboot call site got a chance to set something more specific first. Free-text on
+/// the wire (not a closed enum) — new reasons can be added camera-side without an app update;
+/// treat any unrecognized string as informational, never branch app logic on its exact value.
 enum ClockSyncState { synced, uncertain }
 
 class HealthStatus {
   const HealthStatus({
     required this.rebootCount,
     required this.lastRebootUtc,
+    required this.rebootReason,
     required this.uptimeSeconds,
     required this.clockSyncState,
     required this.uncertainSince,
@@ -29,6 +39,9 @@ class HealthStatus {
 
   final int rebootCount;
   final int lastRebootUtc;
+
+  /// See this class's own doc comment. Empty string on firmware too old to report it.
+  final String rebootReason;
   final int uptimeSeconds;
   final ClockSyncState clockSyncState;
 

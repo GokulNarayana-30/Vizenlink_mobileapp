@@ -364,12 +364,21 @@ class MaskClient {
           )
           .timeout(timeout);
 
+      // [AI Fix] 2026-09-24: SOAP-fault check moved before the status-code check -- real bug
+      // found via RecordingTimelineScreen's single-playback-session rejection (module_rtsps.c
+      // via OperationProhibited/409): this firmware returns a real <Fault> body on a non-200
+      // status for some rejections (unlike the Media2-validation-error case soapFaultReason's
+      // own doc describes, which is HTTP 200), and the old ordering returned the raw XML fault
+      // body as the error string before soapFaultReason() ever got a chance to parse it --
+      // exactly the "SOAP response dumped in the UI" symptom this fixes. A fault is checked for
+      // on every response regardless of status; the raw "HTTP <code>: <body>" fallback now only
+      // fires for a genuinely non-SOAP failure (e.g. a proxy's own 502/503 HTML page).
+      final faultReason = soapFaultReason(response.body);
+      if (faultReason != null) return CameraFailure(faultReason);
+
       if (response.statusCode != 200) {
         return CameraFailure('HTTP ${response.statusCode}: ${response.body}');
       }
-
-      final faultReason = soapFaultReason(response.body);
-      if (faultReason != null) return CameraFailure(faultReason);
 
       return CameraSuccess(response.body);
     } on Exception catch (e) {

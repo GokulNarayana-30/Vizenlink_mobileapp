@@ -159,6 +159,13 @@ class NuraeyeClient {
         return _get('/nuraeye/local-storage', timeout);
       case 'SetLocalStorage':
         return _post('/nuraeye/local-storage', {'enabled': p['enabled']}, timeout);
+      case 'GetRecordingMode':
+        return _get('/nuraeye/recordings/mode', timeout);
+      case 'SetRecordingMode':
+        return _post('/nuraeye/recordings/mode', {
+          'mode': p['mode'],
+          if (p['schedule'] != null) 'schedule': p['schedule'],
+        }, timeout);
       case 'GetDeviceHealth':
         return _get('/nuraeye/health', timeout);
       case 'GetRecordings':

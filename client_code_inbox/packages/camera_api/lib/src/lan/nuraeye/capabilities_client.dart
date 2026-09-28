@@ -1,4 +1,5 @@
 import '../../camera_result.dart';
+import '../../recording_mode_types.dart';
 import 'nuraeye_client.dart';
 
 /// Camera capability discovery (`FR-NE-092`) — a single, growing NuraEye action rather than one
@@ -26,6 +27,8 @@ class CameraCapabilities {
     required this.loiteringDurationMinSeconds,
     required this.loiteringDurationMaxSeconds,
     required this.bboxOverlayCapable,
+    required this.supportedRecordingModes,
+    required this.maxRecordingScheduleWindows,
   });
 
   /// Whether this device can receive AWS IoT/MQTT commands at all (deterrence, settings sync,
@@ -90,6 +93,25 @@ class CameraCapabilities {
   /// overlay for). Gate `BboxOverlayClient`-driven UI on this, same as every other capability
   /// flag here — default `false` on firmware too old to report it.
   final bool bboxOverlayCapable;
+
+  /// `FR-CF-048`/`FR-NE-089`/`FR-MOB-088`: which local recording modes this SKU supports at
+  /// all (Continuous requires only `localStorageCapable`; Event-Triggered additionally requires
+  /// `AI_DETECTIONS` compiled in). `RecordingModeSettingsScreen` builds its mode selector from
+  /// this list only, never a hardcoded set of choices — never shows an unsupported mode as a
+  /// disabled option, per `FR-MOB-088`. Empty on firmware too old to report it.
+  final List<RecordingMode> supportedRecordingModes;
+
+  /// `FR-CF-045`/`FR-NE-089`: max total windows `RecordingModeClient.setMode`'s Scheduled-mode
+  /// `schedule` list may hold (`NURAEYE_MAX_RECORDING_SCHEDULE_WINDOWS`, fixed compile-time
+  /// bound — the camera's persisted schedule array is a fixed-size buffer, not dynamically
+  /// sized). `RecordingModeSettingsScreen`'s schedule editor must build its "add window"/total
+  /// cap from this field, never a hardcoded constant — added 2026-09-25 after the app was found
+  /// hardcoding a matching Dart constant instead of deriving it from this response, a real gap
+  /// against this repo's own "no hardcoded values permitted, build UI from the capabilities/
+  /// Options response only" convention. Default `14` (this constant's value on every firmware
+  /// build shipped before this field existed) on a build too old to report it — not `0`, which
+  /// would wrongly block the editor entirely on old-but-otherwise-working firmware.
+  final int maxRecordingScheduleWindows;
 }
 
 /// Dispatches over both LAN and WAN on the firmware side (`FR-NE-092`, matching the
@@ -163,6 +185,16 @@ class CapabilitiesClient {
                       ? value['loitering_duration_max_seconds'] as int
                       : 0,
               bboxOverlayCapable: value['bbox_overlay_capable'] == true,
+              supportedRecordingModes: (value['supported_recording_modes'] is List
+                      ? (value['supported_recording_modes'] as List).whereType<String>()
+                      : const <String>[])
+                  .map(RecordingMode.fromWireValue)
+                  .whereType<RecordingMode>()
+                  .toList(),
+              maxRecordingScheduleWindows:
+                  value['max_recording_schedule_windows'] is int
+                      ? value['max_recording_schedule_windows'] as int
+                      : 14,
             ),
           );
         }(),

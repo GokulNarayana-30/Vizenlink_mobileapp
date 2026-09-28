@@ -20,16 +20,18 @@ class RestHealthClient {
 class GetDeviceHealthResponse {
   final int? rebootCount;
   final int? lastRebootUtc;
+  final String? rebootReason;
   final int? uptimeSeconds;
   final String? clockSyncState;
   final int? uncertainSince;
   final String? firmwareVersion;
 
-  const GetDeviceHealthResponse({this.rebootCount, this.lastRebootUtc, this.uptimeSeconds, this.clockSyncState, this.uncertainSince, this.firmwareVersion});
+  const GetDeviceHealthResponse({this.rebootCount, this.lastRebootUtc, this.rebootReason, this.uptimeSeconds, this.clockSyncState, this.uncertainSince, this.firmwareVersion});
 
   factory GetDeviceHealthResponse.fromJson(Map<String, dynamic> json) => GetDeviceHealthResponse(
         rebootCount: json['reboot_count'] as int?,
         lastRebootUtc: json['last_reboot_utc'] as int?,
+        rebootReason: json['reboot_reason'] as String?,
         uptimeSeconds: json['uptime_seconds'] as int?,
         clockSyncState: json['clock_sync_state'] as String?,
         uncertainSince: json['uncertain_since'] as int?,

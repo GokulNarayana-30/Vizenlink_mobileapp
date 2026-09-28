@@ -43,6 +43,9 @@ class WanHealthClient {
         HealthStatus(
           rebootCount: rebootCount,
           lastRebootUtc: lastRebootUtc,
+          // BUG-048 follow-up: not required, unlike the other fields above -- older firmware
+          // simply won't have it, and that's a normal case, not a malformed response.
+          rebootReason: output['reboot_reason'] is String ? output['reboot_reason'] as String : '',
           uptimeSeconds: uptimeSeconds,
           clockSyncState: clockSyncState,
           uncertainSince: uncertainSince,

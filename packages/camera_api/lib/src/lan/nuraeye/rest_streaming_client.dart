@@ -28,6 +28,11 @@ class RestStreamingClient {
     return _client.get('/nuraeye/preview-key').then((result) => result.map((json) => GetPreviewKeyResponse.fromJson(json)));
   }
 
+  /// Resolve the two-way-talk connection URI (dedicated audio-only RTSPS module)
+  Future<RestResult<GetTalkUriResponse>> getTalkUri() {
+    return _client.post('/nuraeye/talk-uri', const <String, dynamic>{}).then((result) => result.map((json) => GetTalkUriResponse.fromJson(json)));
+  }
+
   Future<RestResult<void>> stopCloudStreaming() {
     final body = <String, dynamic>{'active': false};
     return _client.post('/nuraeye/cloud/streaming', body);
@@ -67,6 +72,22 @@ class GetPreviewKeyResponse {
 
   factory GetPreviewKeyResponse.fromJson(Map<String, dynamic> json) => GetPreviewKeyResponse(
         key: json['key'] as String?,
+      );
+}
+
+class GetTalkUriResponse {
+  final String? transport;
+  final int? port;
+  final String? path;
+  final String? url;
+
+  const GetTalkUriResponse({this.transport, this.port, this.path, this.url});
+
+  factory GetTalkUriResponse.fromJson(Map<String, dynamic> json) => GetTalkUriResponse(
+        transport: json['transport'] as String?,
+        port: json['port'] as int?,
+        path: json['path'] as String?,
+        url: json['url'] as String?,
       );
 }
 

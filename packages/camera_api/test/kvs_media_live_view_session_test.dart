@@ -228,7 +228,11 @@ void main() {
         await done;
         await _pump(200);
         await s.stop();
-        expect(boxAligned(received), isTrue, reason: 'cap=$cap left a torn box');
+        expect(
+          boxAligned(received),
+          isTrue,
+          reason: 'cap=$cap left a torn box',
+        );
         return received.length;
       }
 

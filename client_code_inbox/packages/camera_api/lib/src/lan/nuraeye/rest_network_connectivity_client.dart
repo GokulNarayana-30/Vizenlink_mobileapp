@@ -59,6 +59,11 @@ class TimezoneEntry {
         code: json['code'] as String?,
         name: json['name'] as String?,
       );
+
+  Map<String, dynamic> toJson() => {
+        'code': code,
+        'name': name,
+      };
 }
 
 class GetTimezonesResponse {

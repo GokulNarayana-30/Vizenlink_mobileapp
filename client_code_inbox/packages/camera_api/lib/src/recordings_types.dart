@@ -48,8 +48,15 @@ class RecordingsList {
   final bool storageAvailable;
   final bool cardPresent;
 
-  /// True if more clips exist in the requested range than fit in this response — narrow the
-  /// `start`/`end` query range rather than expecting pagination (`FR-NE-117` has none).
+  /// True if more clips exist in the requested range than this one response's fixed-size JSON
+  /// buffer could fit (not a clip-count cap) — real bug found 2026-09-24: a naive single-call
+  /// `getRecordings()` with no `start`/`end` bound fills this buffer with the *oldest* matching
+  /// clips first, so once a camera has accumulated enough history, genuinely new clips can be
+  /// silently cut off entirely, never appearing in the response at all. Page forward with
+  /// `start = <last-returned clip's start> + 1` and keep requesting until `truncated` comes back
+  /// `false` — see [RecordingsClient.getAllRecordings] for a client that does this
+  /// automatically, and prefer it over a bare [RecordingsClient.getRecordings] call for any
+  /// screen that needs a complete, current list.
   final bool truncated;
 
   final List<RecordingClip> clips;

@@ -223,6 +223,13 @@ class IotCommandClient {
   static const pauseClipPlayback = 77;
   static const resumeClipPlayback = 78;
   static const stopClipPlayback = 79;
+
+  /// `FEAT-031`/`FR-NE-088`/`FR-NE-089`: WAN counterparts to the LAN `SetRecordingMode`/
+  /// `GetRecordingMode`/`GetSupportedRecordingModes` actions — implemented in firmware since
+  /// 2026-08-25 but never wired into the app until `FR-MOB-084`-`088`.
+  static const setRecordingMode = 67;
+  static const getRecordingMode = 68;
+  static const getSupportedRecordingModes = 69;
   static const getRecordings = 80;
   static const getRecordingDates = 81;
 

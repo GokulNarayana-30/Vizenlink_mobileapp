@@ -35,9 +35,10 @@ class ReplayServiceCapabilities {
 }
 
 /// LAN-only ONVIF Replay Control client (`/onvif/replay`, SOAP, WS-UsernameToken digest auth)
-/// — Profile G's playback-URI half (`FR-OV-082`). **Client-only for now**, same scope note as
-/// `OnvifRecordingClient`/`OnvifSearchClient` — not wired into any screen, parallel to the
-/// existing REST-based `ClipPlaybackScreen`.
+/// — Profile G's playback-URI half (`FR-OV-082`). **Wired into `RecordingTimelineScreen`**
+/// (`_replayControl.getReplayUri(...)`) — the doc comment previously here calling this
+/// "client-only, not wired into any screen" was stale (corrected 2026-09-24; see
+/// `API_REFERENCE.md`'s own history note for when that changed).
 ///
 /// [getReplayUri] returns the RTSP(S) URI as plain data only — this client does **not** open an
 /// RTSP connection or play back any video; a future consumer (not built in this pass) would hand
@@ -85,6 +86,17 @@ class OnvifReplayControlClient {
   /// `CameraFailure` (not a generic error) when the token doesn't resolve to an existing clip —
   /// the firmware maps that specific case to `ter:NoConfig` (`OnvifError_NoSuchConfiguration`),
   /// which surfaces through [soapFaultReason] like any other SOAP fault.
+  ///
+  /// **Also fails with `CameraFailure` when a playback session is already active** — this
+  /// device deliberately rejects a second concurrent playback client (LAN or WAN) rather than
+  /// evicting the first, so whichever client connected first keeps its session until it
+  /// explicitly stops. `onvif_fault.c`'s `OnvifFaultSubCodeEx_PlaybackBusy` (added 2026-09-24)
+  /// gives this a specific, directly-showable message — `"A recorded-clip playback session is
+  /// already in progress on this device. Try again once it ends."` — replacing the generic
+  /// `ter:OperationProhibited` wording it used to reuse (real bug: that generic text, or worse,
+  /// the raw unparsed SOAP fault body, was surfacing straight into `RecordingTimelineScreen`'s
+  /// error display). No special-casing needed in this client — [soapFaultReason] already
+  /// surfaces whatever text the firmware sends.
   Future<CameraResult<String>> getReplayUri(
     String recordingToken, {
     Duration timeout = const Duration(seconds: 10),
@@ -140,12 +152,21 @@ class OnvifReplayControlClient {
           )
           .timeout(timeout);
 
+      // [AI Fix] 2026-09-24: SOAP-fault check moved before the status-code check -- real bug
+      // found via RecordingTimelineScreen's single-playback-session rejection (module_rtsps.c
+      // via OperationProhibited/409): this firmware returns a real <Fault> body on a non-200
+      // status for some rejections (unlike the Media2-validation-error case soapFaultReason's
+      // own doc describes, which is HTTP 200), and the old ordering returned the raw XML fault
+      // body as the error string before soapFaultReason() ever got a chance to parse it --
+      // exactly the "SOAP response dumped in the UI" symptom this fixes. A fault is checked for
+      // on every response regardless of status; the raw "HTTP <code>: <body>" fallback now only
+      // fires for a genuinely non-SOAP failure (e.g. a proxy's own 502/503 HTML page).
+      final faultReason = soapFaultReason(response.body);
+      if (faultReason != null) return CameraFailure(faultReason);
+
       if (response.statusCode != 200) {
         return CameraFailure('HTTP ${response.statusCode}: ${response.body}');
       }
-
-      final faultReason = soapFaultReason(response.body);
-      if (faultReason != null) return CameraFailure(faultReason);
 
       return CameraSuccess(response.body);
     } on Exception catch (e) {

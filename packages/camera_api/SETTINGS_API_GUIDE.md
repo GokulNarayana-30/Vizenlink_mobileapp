@@ -123,7 +123,14 @@ via `getImagingOptions()` → `ImagingOptions.wdrSupported`.
 **WAN:** `WanImagingClient.getWdr()`/`setWdr(enabled, level)`.
 
 **Notes:** `ImagingOptions.wdrSupported == false` means the WDR element was entirely absent from
-the response (non-HDR sensor) — hide the control outright, don't just disable it. WDR support
+the response — either a non-HDR sensor, **or** a build with WDR disabled at compile time via
+`build_camera_app.sh`'s `wdr` option (added 2026-09-24, default `disabled` on every sensor after
+a real hardware flicker defect under LED lighting + reflective surfaces was root-caused to WDR
+mode specifically — `FR-CF-147`, `.claude/skills/camera-firmware/SKILL.md`'s config schema).
+This app needs **no code change** to handle that case correctly — a build-time-disabled WDR
+reports exactly the same "element absent" shape this section already describes, so the existing
+`wdrSupported`-driven hide-the-control logic already covers it for free. Hide the control
+outright when `false`, don't just disable it. WDR support
 must be read from `getImagingOptions()`'s own `wdrSupported` flag, never inferred from whether
 `GetImagingSettings` happens to include the field. See
 [Per-setting Options-response capability flags](#per-setting-options-response-capability-flags--not-the-same-idea-as-the-two-above)
@@ -779,6 +786,51 @@ a re-probe like `_maybeReprobeLocalStorage` now just calls it directly (bypassin
 cache by construction, since it never reads from it) and writes the fresh answer back into
 `NetworkAnswerCache` itself.
 
+## Recording Mode
+
+**Concept:** local (SD card) recording mode — Continuous (always-on when enabled, the
+pre-existing default), Scheduled (weekly day/time windows), or Event-Triggered (post-roll only
+for v1: starts on AI detection, stops 10s after the last one, `FR-CF-046`/`FR-NE-088`/
+`FR-MOB-084`-`088`). Camera-firmware side (`FEAT-031`) implemented since 2026-08-25; this app-side
+wiring added 2026-09-24, the first client for it.
+
+**Not to be confused with:** the Local Storage on/off toggle above (`FR-CF-044`) — that gates
+*whether* recording happens at all; this setting gates *when/under what condition* it happens
+while storage is on. The mode selector is blocked with the same "no card"/"storage disabled"
+reasons Local Storage already reports, since a mode is meaningless while storage itself is off.
+
+**LAN:** `RecordingModeClient.getMode()`/`setMode(RecordingMode, {schedule})`. **WAN:**
+`WanRecordingModeClient` — same methods, same `RecordingModeStatus` type, plus
+`getSupportedModes()` (`FR-NE-089`, Set-failure recovery only — see Notes).
+
+**Capability:** `CameraCapabilities.supportedRecordingModes`
+(`CapabilitiesClient.getCapabilities()`) — cached at onboarding as
+`CachedCameraSettings.supportedRecordingModes`, same convention as `localStorageSupported`.
+`RecordingModeSettingsScreen` (embedded inside `StorageSettingsScreen`'s "Config" tab, directly
+below the local-storage enable/disable card — not a separate tab, direct user correction
+2026-09-24 from an initial separate-tab version) builds its mode selector from this list only —
+never shows an unsupported mode as a disabled option (`FR-MOB-088`), and re-probes live (LAN
+only) if the cache is still empty on open, mirroring
+`StorageSettingsScreen._maybeReprobeLocalStorage`.
+
+**Notes:**
+- `schedule` (`List<RecordingScheduleWindow>`, `day_of_week` `0`-`6`=Sun-Sat, `start_minute`/
+  `end_minute` minutes since local midnight) is only sent to the camera when `mode` is
+  `scheduled` — both clients drop it silently for the other two modes even if a caller passes
+  one. No overnight wrap — express an overnight window as two entries.
+  `RecordingModeSettingsScreen` validates schedule windows client-side (no inversion, no
+  same-day overlap) before Apply, per `FR-MOB-085`. **Capped at 2 windows/day × 7 days = 14
+  total** (direct user decision 2026-09-24), matching `NURAEYE_MAX_RECORDING_SCHEDULE_WINDOWS`
+  (`nuraeye_types.h`) exactly — the editor disables "Add window" and rejects a day-of-week change
+  that would push a day over its 2-window limit, rather than only catching it at Apply time.
+- `RecordingModeStatus.eventTriggerSourceConfigured` (`FR-CF-047`) is a global AI-detection
+  on/off check for v1, not per-zone — `RecordingModeSettingsScreen` surfaces it as a warning
+  (linking to Alert Settings) only while Event-Triggered is the pending selection, per
+  `FR-MOB-086`.
+- Follows this file's standing Options-parity convention: on a Set failure, the screen re-probes
+  `supportedRecordingModes` (LAN, `forceRefresh`-style bypass of the app cache) before surfacing
+  the error, in case the SKU's supported set changed since it was last cached.
+
 ## Camera Health
 
 **Concept:** Reboot count/time, uptime, clock-sync status, and firmware version (`FR-HLT-009`/
@@ -815,6 +867,16 @@ identical value `GetDeviceInfo`/ONVIF `GetDeviceInformation` already report.
 basic param, then extended after checking which other already-implemented firmware state wasn't
 yet shipped anywhere.
 
+**`reboot_reason` added 2026-09-25** (`BUG-048` follow-up) — why the *current* boot happened:
+`"Firmware Upgrade"`, `"Factory Reset"`, `"HTTP Server Failure"` (the httpd connection-pool-
+exhaustion watchdog's own last-resort reboot), `"Manual Reboot"`, `"WiFi Provisioning"`,
+`"Sensor Capture Mode Change"`, or `"Unknown / Crash"` for a genuine, uncontrolled crash. Free
+text on the wire, not a closed enum — the app must not branch logic on its exact value beyond
+the one special case `HealthSettingsScreen` uses for its own icon/color (highlighting `"Unknown
+/ Crash"` differently from every other, deliberate reason). Empty string on firmware too old to
+report it — `HealthSettingsScreen` simply omits the row in that case, same "field absent, not
+malformed" convention every other optional health field already follows.
+
 **LAN:** `HealthClient.getHealth()`. **WAN:** `WanHealthClient.getHealth()` — same
 `HealthStatus` type.
 
@@ -849,10 +911,15 @@ and every screen above stay exactly as-is, and the ONVIF client is expected to e
 them once Profile G "becomes strong." Don't wire it into `RecordingsScreen`/`ClipPlaybackScreen`
 without a separate, explicit decision to do so.
 
-**LAN only** — no WAN client exists yet. `RecordingsClient.getRecordings({start, end})` lists
-clips. `RecordingsClient.clipUri(id)`/`clipHeaders()` still exist (Range-capable HTTP URL +
-auth headers) but are **not** what playback actually uses — see the download-then-play note
-below.
+**LAN only** — no WAN client exists yet. `RecordingsClient.getAllRecordings({start, end})` lists
+clips (pages through the single-response-buffer limit automatically — use this, not the
+single-page `getRecordings`, for any screen that needs a complete list; see both methods' own
+doc comments and `RecordingsList.truncated`'s doc for the real bug this fixed 2026-09-24:
+`RecordingsScreen`/`RecordingTimelineScreen` used the single-page call directly and silently
+hid every clip newer than whatever filled the first response, including freshly-recorded
+scheduled-mode clips, on any camera with enough history). `RecordingsClient.clipUri(id)`/
+`clipHeaders()` still exist (Range-capable HTTP URL + auth headers) but are **not** what
+playback actually uses — see the download-then-play note below.
 
 **Playback downloads the clip first, it does not stream directly from the camera** (`BUG-004`,
 found 2026-08-24 — `video_player`'s native platform player, unlike every other client in this
