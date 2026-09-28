@@ -3666,7 +3666,14 @@ class _PlaybackTabState extends State<_PlaybackTab> {
     if (_useWan) {
       return _wanRecordings!.getRecordings(start: start, end: end);
     }
-    final result = await _recordings!.getRecordings(start: start, end: end);
+    // getAllRecordings, not getRecordings: a single page's fixed-size JSON
+    // buffer fills with the OLDEST matching clips first, so a camera with
+    // enough history can silently omit genuinely new clips from a bare
+    // getRecordings call rather than just truncating the tail -- real bug
+    // found 2026-09-24 (camera_api's own recordings_client.dart doc), which
+    // made a fully-working scheduled recording look broken because its own
+    // freshly-recorded clips never appeared.
+    final result = await _recordings!.getAllRecordings(start: start, end: end);
     return switch (result) {
       CameraSuccess(:final value) => () {
         _logPlayback(
@@ -4019,11 +4026,23 @@ class _PlaybackTabState extends State<_PlaybackTab> {
     // previous session is released before this runs, but the camera can take
     // a beat to actually free its slot after the RTSP TEARDOWN, so a busy
     // answer is retried briefly rather than treated as "no recording".
+    //
+    // camera_api's 2026-09-24 SOAP-fault-ordering fix (soap_fault.dart)
+    // changed what this reason string actually looks like: it used to be the
+    // raw "HTTP 409: <SOAP-ENV:Envelope>...<ter:PlaybackBusy>..." XML dump,
+    // which is why the original check matched the literal subcode text. It's
+    // now the parsed <Text> reason, "A recorded-clip playback session is
+    // already in progress on this device." Match both so this keeps working
+    // regardless of which camera_api version is running.
     var uriResult = await replayControl.getReplayUri(clip.id.toString());
     for (var attempt = 1; attempt <= 5; attempt++) {
+      final reason = uriResult is CameraFailure<String>
+          ? uriResult.reason.toLowerCase()
+          : null;
       final busy =
-          uriResult is CameraFailure<String> &&
-          uriResult.reason.contains('PlaybackBusy');
+          reason != null &&
+          (reason.contains('playbackbusy') ||
+              reason.contains('already in progress'));
       if (!busy || !mounted || requestId != _openClipRequestId) break;
       _logPlayback(
         '_openClip(${clip.id}): camera reports PlaybackBusy, retry $attempt/5',

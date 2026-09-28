@@ -613,7 +613,10 @@ class _RecordingsTabState extends State<_RecordingsTab> {
     String? failure;
     final recordings = _recordings;
     if (recordings != null) {
-      switch (await recordings.getRecordings(
+      // getAllRecordings, not getRecordings: see camera_live_screen.dart's
+      // _getRecordings for why a bare single-page call can silently omit
+      // genuinely new clips on a camera with enough history.
+      switch (await recordings.getAllRecordings(
         start: startEpoch,
         end: endEpoch,
       )) {

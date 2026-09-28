@@ -134,3 +134,38 @@ parameter on SetOSD first.
 **Still open for the senior:** the OSD `font_size` setter (bounds are reported, but no setter
 accepts a value, so the font-size control remains unbuildable), and test coverage — the suite is
 still 169 tests, with no coverage for `heartbeat()` or the newly plumbed timeout/retry parameters.
+
+## 2026-09-28 drop — integrated
+
+New capability: **local recording mode** (`RecordingMode`: continuous/scheduled/eventTriggered),
+closing `recording_screen.dart`'s long-standing ❌ blocked status.
+
+| Client class(es) | LAN / WAN pair | What it does | Integrated into |
+|---|---|---|---|
+| `RecordingModeClient` / `WanRecordingModeClient` | LAN + WAN, same `RecordingModeStatus` type | `getMode()`/`setMode(RecordingMode, {schedule})` (`FR-CF-046`/`FR-NE-088`/`FR-MOB-084`). WAN adds `getSupportedModes()` — Set-failure recovery only, per the screen-conventions rule; a normal load stays LAN-only via `CapabilitiesClient`. | `recording_screen.dart` — mode selector + schedule editor, gated by `CameraCapabilities.supportedRecordingModes`, verified after a timeout via `getMode()` same as every other real settings screen |
+| `CapabilitiesClient.getCapabilities()` (extended) | LAN | Gained `supportedRecordingModes` and `maxRecordingScheduleWindows` (the schedule's fixed compile-time slot cap — was previously a hardcoded `14` nowhere in this app; now read from the response, default `14` only for firmware too old to report it) | `recording_screen.dart` |
+
+**Off is deliberately not wired to `SetRecordingMode`.** `SETTINGS_API_GUIDE.md`'s own "Recording
+Mode" entry is explicit that Off is a different concept — the separate Local Storage on/off toggle
+(`FR-CF-044`, already on `storage_screen.dart`), not a fourth `RecordingMode` wire value. Choosing
+Off in `recording_screen.dart` only updates local state, same as before this integration.
+
+**Two bug fixes bundled in this drop, both already affecting already-✅ screens:**
+- `RecordingsClient.getAllRecordings()` — `getRecordings()`'s single-page response fills with the
+  **oldest** matching clips first, so a camera with enough history could silently omit genuinely
+  new clips rather than just truncating the tail. `camera_live_screen.dart`'s Playback tab and
+  `storage_screen.dart`'s Recordings tab both called the single-page `getRecordings()` directly;
+  both now call `getAllRecordings()` instead. `WanRecordingsClient.getRecordings()` was unaffected
+  (already pages internally per its own doc).
+- ONVIF SOAP-fault-check ordering (`mask_client.dart`, `onvif_imaging_client.dart`) — a fault
+  check now runs before the status-code check, so a non-200 rejection that carries a real
+  `<Fault>` body (e.g. this camera's `ter:PlaybackBusy` on `GetReplayUri`) returns the parsed
+  `<Text>` reason instead of the raw XML dumped as the error string. This changed the exact
+  string `camera_live_screen.dart`'s `_openLanClipSession` PlaybackBusy-retry matched on — it now
+  checks both the old raw-XML substring and the new human-readable one, so it keeps working
+  either way.
+
+**Also new, not yet surfaced anywhere:** `HealthStatus.rebootReason` (`health_types.dart`) — why
+the current boot happened (`"Firmware Upgrade"`, `"Factory Reset"`, `"Unknown / Crash"`, etc.).
+No screen reads it yet; `camera_info_screen.dart`'s Device Health section would be the natural
+home if this becomes worth surfacing.
