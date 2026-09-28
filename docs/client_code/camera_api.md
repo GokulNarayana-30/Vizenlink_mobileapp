@@ -145,10 +145,15 @@ closing `recording_screen.dart`'s long-standing ❌ blocked status.
 | `RecordingModeClient` / `WanRecordingModeClient` | LAN + WAN, same `RecordingModeStatus` type | `getMode()`/`setMode(RecordingMode, {schedule})` (`FR-CF-046`/`FR-NE-088`/`FR-MOB-084`). WAN adds `getSupportedModes()` — Set-failure recovery only, per the screen-conventions rule; a normal load stays LAN-only via `CapabilitiesClient`. | `recording_screen.dart` — mode selector + schedule editor, gated by `CameraCapabilities.supportedRecordingModes`, verified after a timeout via `getMode()` same as every other real settings screen |
 | `CapabilitiesClient.getCapabilities()` (extended) | LAN | Gained `supportedRecordingModes` and `maxRecordingScheduleWindows` (the schedule's fixed compile-time slot cap — was previously a hardcoded `14` nowhere in this app; now read from the response, default `14` only for firmware too old to report it) | `recording_screen.dart` |
 
-**Off is deliberately not wired to `SetRecordingMode`.** `SETTINGS_API_GUIDE.md`'s own "Recording
-Mode" entry is explicit that Off is a different concept — the separate Local Storage on/off toggle
-(`FR-CF-044`, already on `storage_screen.dart`), not a fourth `RecordingMode` wire value. Choosing
-Off in `recording_screen.dart` only updates local state, same as before this integration.
+**Off is not `SetRecordingMode` — it's `LocalStorageClient`/`WanLocalStorageClient.setEnabled(false)`.**
+`SETTINGS_API_GUIDE.md`'s own "Recording Mode" entry is explicit that Off is a different concept —
+the separate Local Storage on/off toggle (`FR-CF-044`, already integrated on `storage_screen.dart`),
+not a fourth `RecordingMode` wire value. An initial pass left Off local-only, which review caught
+as a real gap: three of four options would genuinely control the camera while the fourth silently did
+nothing, indistinguishable in the UI. `recording_screen.dart` now calls the Local Storage toggle for
+Off (without touching whatever `RecordingMode` is configured underneath, so re-enabling storage later
+resumes that mode) and re-enables storage first when a real mode is chosen, so the one radio group
+stays coherent with the two independent camera-side facts it represents.
 
 **Two bug fixes bundled in this drop, both already affecting already-✅ screens:**
 - `RecordingsClient.getAllRecordings()` — `getRecordings()`'s single-page response fills with the

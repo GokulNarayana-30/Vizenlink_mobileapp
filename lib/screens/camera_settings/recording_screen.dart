@@ -20,9 +20,18 @@ import 'detections_screen.dart';
 /// `RecordingStatus` <-> `RecordingMode` — `null` for [RecordingStatus.off],
 /// which has no wire representation at all: `SETTINGS_API_GUIDE.md`'s own
 /// "Recording Mode" entry is explicit that Off is a different concept
-/// entirely (the separate Local Storage on/off toggle on
-/// `storage_screen.dart`, `FR-CF-044`), not a fourth `RecordingMode` value.
-/// Choosing Off here is deliberately never sent to the camera — see [_save].
+/// entirely — the separate Local Storage on/off toggle on
+/// `storage_screen.dart` (`FR-CF-044`), not a fourth `RecordingMode` value.
+///
+/// This screen presents both as one radio group, so [_save] and [_loadReal]
+/// keep them coherent: choosing Off disables Local Storage without touching
+/// whatever `RecordingMode` is configured underneath (so turning storage
+/// back on later resumes that mode rather than forcing reconfiguration);
+/// choosing a real mode re-enables Local Storage first if it was off, then
+/// sets that mode. On load, Off is shown whenever Local Storage is
+/// confirmed disabled, regardless of what `RecordingMode` the camera
+/// reports underneath — matching what's functionally true (no new footage
+/// either way) over what's merely configured.
 RecordingMode? _toWireMode(RecordingStatus status) => switch (status) {
   RecordingStatus.continuous => RecordingMode.continuous,
   RecordingStatus.scheduled => RecordingMode.scheduled,
@@ -215,7 +224,7 @@ class _RecordingScreenState extends State<RecordingScreen> {
     _loadReal();
   }
 
-  Future<void> _loadReal({bool forceRefresh = false}) async {
+  Future<void> _loadReal() async {
     final connection = _camera.connection;
     if (connection == null) return;
     setState(() => _isLoading = true);
@@ -224,15 +233,20 @@ class _RecordingScreenState extends State<RecordingScreen> {
     final results = await Future.wait([
       RecordingModeClient(nuraeye).getMode(),
       CapabilitiesClient(nuraeye).getCapabilities(),
+      LocalStorageClient(nuraeye).getStatus(),
     ]);
     nuraeye.close();
 
     var modeResult = results[0] as CameraResult<RecordingModeStatus>;
     final capsResult = results[1] as CameraResult<CameraCapabilities>;
+    var storageResult = results[2] as CameraResult<LocalStorageStatus>;
 
     final thingName = connection.thingName;
     if (modeResult is! CameraSuccess && thingName != null) {
       modeResult = await WanRecordingModeClient(thingName).getMode();
+    }
+    if (storageResult is! CameraSuccess && thingName != null) {
+      storageResult = await WanLocalStorageClient(thingName).getStatus();
     }
 
     if (!mounted) return;
@@ -241,6 +255,21 @@ class _RecordingScreenState extends State<RecordingScreen> {
       if (modeResult case CameraSuccess(:final value)) {
         _mode = _fromWireMode(value.mode);
         _scheduleWindows = _scheduleFromWire(value.schedule);
+      }
+      // Off shown whenever storage is confirmed disabled, regardless of
+      // what RecordingMode the camera reports underneath — see this
+      // class's own doc comment for why. A storage-status fetch failure
+      // leaves whatever _mode the RecordingMode fetch above already set.
+      if (storageResult case CameraSuccess(:final value)) {
+        if (!value.enabled) {
+          _mode = RecordingStatus.off;
+        } else if (_mode == RecordingStatus.off) {
+          // Storage is on but _mode was never set from a real RecordingMode
+          // fetch (e.g. that call failed) — Off would be a lie here, since
+          // Off's whole meaning is "storage is disabled". Fall back to the
+          // camera's default rather than show a state that isn't true.
+          _mode = RecordingStatus.continuous;
+        }
       }
       if (capsResult case CameraSuccess(:final value)) {
         _supportedModes = value.supportedRecordingModes;
@@ -386,6 +415,82 @@ class _RecordingScreenState extends State<RecordingScreen> {
     });
   }
 
+  /// Sets Local Storage enabled/disabled — the wire counterpart of Off — and
+  /// verifies against a re-read on a timeout the same way [_setRecordingMode]
+  /// does. Returns `true` only once the camera's own state confirms [enabled].
+  Future<bool> _setStorageEnabled(
+    CameraConnection connection,
+    bool enabled,
+  ) async {
+    final thingName = connection.thingName;
+    final result = await callPreferringKnownTransport(
+      camera: _camera,
+      thingName: thingName,
+      lan: () {
+        final nuraeye = NuraeyeClient(connection);
+        final result = LocalStorageClient(nuraeye).setEnabled(enabled);
+        return result.whenComplete(nuraeye.close);
+      },
+      wan: () => WanLocalStorageClient(thingName!).setEnabled(enabled),
+    );
+    if (result is CameraSuccess) return true;
+    return verifyAfterTimeout<LocalStorageStatus>(
+      fetchCurrent: () => callPreferringKnownTransport(
+        camera: _camera,
+        thingName: thingName,
+        lan: () {
+          final nuraeye = NuraeyeClient(connection);
+          final result = LocalStorageClient(nuraeye).getStatus();
+          return result.whenComplete(nuraeye.close);
+        },
+        wan: () => WanLocalStorageClient(thingName!).getStatus(),
+      ),
+      matchesExpected: (current) => current.enabled == enabled,
+    );
+  }
+
+  /// Sets the recording mode + schedule and verifies against a re-read on a
+  /// timeout — `SetRecordingMode` has no retry on the same transport before
+  /// the LAN/WAN fallback [callPreferringKnownTransport] already does.
+  Future<bool> _setRecordingMode(
+    CameraConnection connection,
+    RecordingMode wireMode,
+  ) async {
+    final thingName = connection.thingName;
+    final wireSchedule = _scheduleToWire(_scheduleWindows);
+    final result = await callPreferringKnownTransport(
+      camera: _camera,
+      thingName: thingName,
+      lan: () {
+        final nuraeye = NuraeyeClient(connection);
+        final result = RecordingModeClient(
+          nuraeye,
+        ).setMode(wireMode, schedule: wireSchedule);
+        return result.whenComplete(nuraeye.close);
+      },
+      wan: () => WanRecordingModeClient(
+        thingName!,
+      ).setMode(wireMode, schedule: wireSchedule),
+    );
+    if (result is CameraSuccess) return true;
+    return verifyAfterTimeout<RecordingModeStatus>(
+      fetchCurrent: () => callPreferringKnownTransport(
+        camera: _camera,
+        thingName: thingName,
+        lan: () {
+          final nuraeye = NuraeyeClient(connection);
+          final result = RecordingModeClient(nuraeye).getMode();
+          return result.whenComplete(nuraeye.close);
+        },
+        wan: () => WanRecordingModeClient(thingName!).getMode(),
+      ),
+      matchesExpected: (current) =>
+          current.mode == wireMode &&
+          (wireMode != RecordingMode.scheduled ||
+              _scheduleListEquals(_scheduleWindows, current.schedule)),
+    );
+  }
+
   Future<void> _save() async {
     final connection = _camera.connection;
     setState(() => _isSaving = true);
@@ -395,47 +500,18 @@ class _RecordingScreenState extends State<RecordingScreen> {
     if (connection == null) {
       succeeded = await simulateCameraSave();
     } else if (wireMode == null) {
-      // Off has no wire representation to send — see _toWireMode's doc.
-      // Nothing to fail; only the local model changes.
-      succeeded = true;
+      // Off: disable Local Storage, deliberately without touching whatever
+      // RecordingMode is configured underneath — see this class's own doc
+      // comment for why (turning storage back on later should resume that
+      // mode, not force reconfiguration).
+      succeeded = await _setStorageEnabled(connection, false);
     } else {
-      final thingName = connection.thingName;
-      final wireSchedule = _scheduleToWire(_scheduleWindows);
-      final result = await callPreferringKnownTransport(
-        camera: _camera,
-        thingName: thingName,
-        lan: () {
-          final nuraeye = NuraeyeClient(connection);
-          final result = RecordingModeClient(
-            nuraeye,
-          ).setMode(wireMode, schedule: wireSchedule);
-          return result.whenComplete(nuraeye.close);
-        },
-        wan: () => WanRecordingModeClient(
-          thingName!,
-        ).setMode(wireMode, schedule: wireSchedule),
-      );
-      // Same "camera applied it, reply was just lost" case every other real
-      // screen's Apply handles — SetRecordingMode has no retry on the same
-      // transport before the LAN/WAN fallback above.
-      succeeded =
-          result is CameraSuccess ||
-          await verifyAfterTimeout<RecordingModeStatus>(
-            fetchCurrent: () => callPreferringKnownTransport(
-              camera: _camera,
-              thingName: thingName,
-              lan: () {
-                final nuraeye = NuraeyeClient(connection);
-                final result = RecordingModeClient(nuraeye).getMode();
-                return result.whenComplete(nuraeye.close);
-              },
-              wan: () => WanRecordingModeClient(thingName!).getMode(),
-            ),
-            matchesExpected: (current) =>
-                current.mode == wireMode &&
-                (wireMode != RecordingMode.scheduled ||
-                    _scheduleListEquals(_scheduleWindows, current.schedule)),
-          );
+      // A real mode implies storage should be on — re-enable it first if it
+      // was off (best-effort: a failure here still attempts the mode Set
+      // below rather than giving up early, since the mode Set's own failure
+      // path already tells the user to try again).
+      await _setStorageEnabled(connection, true);
+      succeeded = await _setRecordingMode(connection, wireMode);
     }
 
     if (!mounted) return;
@@ -493,7 +569,7 @@ class _RecordingScreenState extends State<RecordingScreen> {
               ReloadSettingsButton(
                 settingsKey: const Key('REC-019'),
                 isBusy: _isLoading || _isSaving,
-                onPressed: () => _loadReal(forceRefresh: true),
+                onPressed: _loadReal,
               ),
               SettingsSaveButton(
                 settingsKey: const Key('REC-002'),
